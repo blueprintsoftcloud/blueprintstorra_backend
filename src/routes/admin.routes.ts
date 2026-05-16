@@ -17,7 +17,7 @@ import {
 } from "../controllers/admin.controller";
 import { validate } from "../middleware/validate.middleware";
 import { createUserSchema } from "../schemas/user.schema";
-import { getCompanySettings, updateCompanySettings, getHomepageConfig, updateHeroConfig, updateFooterConfig, uploadAdminImage } from "../controllers/companySettings.controller";
+import { getCompanySettings, updateCompanySettings, getHomepageConfig, updateHeroConfig, updateFooterConfig, uploadAdminImage, toggleAnnouncementBar } from "../controllers/companySettings.controller";
 import upload from "../middleware/upload";
 import {
   getTrackedCustomers,
@@ -59,6 +59,7 @@ router.get("/dashboard", authMiddleware, adminMiddleware, getDashboardData);
 // Company settings — GET is public (invoice pages), PUT requires admin
 router.get("/company-settings", getCompanySettings);
 router.put("/company-settings", authMiddleware, adminMiddleware, upload.fields([{ name: "logo", maxCount: 1 }, { name: "favicon", maxCount: 1 }]), updateCompanySettings);
+router.patch("/announcement-toggle", authMiddleware, adminMiddleware, toggleAnnouncementBar);
 
 // Single-image upload utility (hero images, etc.)
 router.post("/upload-image", authMiddleware, adminMiddleware, upload.single("image"), uploadAdminImage);

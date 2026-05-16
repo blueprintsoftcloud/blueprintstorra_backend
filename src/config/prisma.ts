@@ -142,6 +142,7 @@ const PRISMA_OPERATORS = new Set([
   'hasEvery',
   'hasSome',
   'not',
+  'mode',
 ]);
 
 const OPERATOR_MAP: Record<string, string> = {
@@ -187,7 +188,18 @@ const convertPrismaOperator = (field: string, value: any): any => {
       return convertValue(field, operand);
     }
     if (operator === 'not') {
-      result.$not = convertPrismaOperator(field, operand);
+      const inner = convertPrismaOperator(field, operand);
+      // MongoDB $not requires a regex or operator expression, not a plain scalar / ObjectId.
+      // For scalar comparisons use $ne instead.
+      if (!isObject(inner) || isObjectIdLike(inner)) {
+        result.$ne = inner;
+      } else {
+        result.$not = inner;
+      }
+      continue;
+    }
+    if (operator === 'mode') {
+      // 'mode: insensitive' is already handled by the 'i' flag in contains/startsWith/endsWith
       continue;
     }
     if (operator === 'contains') {
@@ -334,22 +346,30 @@ const attachRelations = async (modelName: string, docs: any[], include: any) => 
       : undefined;
 
     if (relation.isArray) {
-      const ids = docs.map((doc) => doc._id).filter(Boolean);
+      // doc._id may be a string (already serialized) or an ObjectId — normalize to ObjectId.
+      const ids = docs
+        .map((doc) => { const v = doc._id ?? doc.id; return v ? String(v) : null; })
+        .filter(Boolean)
+        .map((id: string) => Types.ObjectId.isValid(id) ? new Types.ObjectId(id) : id);
       if (ids.length === 0) continue;
-      const relatedDocs = await MODEL_MAP[relation.foreignModel]
+      const rawRelated = await MODEL_MAP[relation.foreignModel]
         .find({ [relation.foreignField]: { $in: ids } })
         .exec();
 
+      // Serialize to plain objects BEFORE assigning. Raw Mongoose Documents strip
+      // dynamically-set properties on .toObject(), so we must convert first.
+      const relatedDocs = rawRelated.map(serializeDocument);
+
       const grouped: Record<string, any[]> = {};
       relatedDocs.forEach((item: any) => {
-        const foreignId = item[relation.foreignField]?.toString();
+        const foreignId = (item[relation.foreignField] ?? item._id)?.toString();
         if (!foreignId) return;
         grouped[foreignId] = grouped[foreignId] ?? [];
         grouped[foreignId].push(item);
       });
 
       for (const doc of docs) {
-        const key = doc._id?.toString();
+        const key = (doc._id ?? doc.id)?.toString();
         doc[relationKey] = grouped[key] ?? [];
       }
 
@@ -362,16 +382,24 @@ const attachRelations = async (modelName: string, docs: any[], include: any) => 
     const foreignIds = docs
       .map((doc) => doc[relation.localField])
       .filter(Boolean)
-      .map((id) => id.toString());
+      .map((id) => String(id));
     if (foreignIds.length === 0) continue;
 
-    const relatedDocs = await MODEL_MAP[relation.foreignModel]
-      .find({ _id: { $in: foreignIds } })
+    // MongoDB _id is an ObjectId — querying with plain strings never matches.
+    const foreignObjectIds = foreignIds.map((id: string) =>
+      Types.ObjectId.isValid(id) ? new Types.ObjectId(id) : id
+    );
+    const rawRelated = await MODEL_MAP[relation.foreignModel]
+      .find({ _id: { $in: foreignObjectIds } })
       .exec();
+
+    // Serialize to plain objects to prevent dynamic property loss on .toObject().
+    const relatedDocs = rawRelated.map(serializeDocument);
 
     const map: Record<string, any> = {};
     relatedDocs.forEach((item: any) => {
-      map[item._id?.toString()] = item;
+      const key = (item._id ?? item.id)?.toString();
+      if (key) map[key] = item;
     });
 
     for (const doc of docs) {
@@ -471,15 +499,35 @@ const queryModel = async (modelName: string, args: any = {}, options: { single?:
   if (!options.single && typeof args.take === 'number') query.limit(args.take);
 
   const docs = await query.exec();
-  const items = options.single ? (docs ? [docs] : []) : docs;
+  const rawItems: any[] = options.single ? (docs ? [docs] : []) : (docs ?? []);
+
+  // Serialize Mongoose Documents to plain JS objects BEFORE attaching relations.
+  // Setting properties on raw Mongoose Documents is unreliable because .toObject()
+  // strips dynamically added fields that are not part of the schema.
+  const items = rawItems.map(serializeDocument);
+
+  // Attach relations to the now-plain objects.
   await attachRelations(lowerName, items, include);
 
-  // Serialize documents to convert _id to id
-  const serialized = options.single 
-    ? (docs ? serializeDocument(docs) : null)
-    : (docs ? docs.map(serializeDocument) : []);
+  // Second serialization pass: convert any nested Mongoose docs that attachRelations
+  // may have attached as raw documents.
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue;
+    for (const key of Object.keys(item)) {
+      const val = item[key];
+      if (val && typeof val === 'object' && typeof val.toObject === 'function') {
+        item[key] = serializeDocument(val);
+      } else if (Array.isArray(val)) {
+        item[key] = val.map((v: any) =>
+          v && typeof v === 'object' && typeof v.toObject === 'function'
+            ? serializeDocument(v)
+            : v
+        );
+      }
+    }
+  }
 
-  return serialized;
+  return options.single ? (items[0] ?? null) : items;
 };
 
 const buildUpdateData = (data: any) => {

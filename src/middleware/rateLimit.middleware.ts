@@ -62,11 +62,13 @@ export const passwordResetLimiter = rateLimit({
 
 /**
  * General API limiter — applied at the app level in server.ts.
- * 200 requests per minute per IP.
+ * 500 requests per minute per IP.
+ * (The homepage alone fires ~10 concurrent requests on each load;
+ *  500/min allows ~50 full page loads per minute before throttling.)
  */
 export const generalLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 200,
+  limit: 500,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   message: {

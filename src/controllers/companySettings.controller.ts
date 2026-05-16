@@ -3,7 +3,7 @@ import { CompanySettings } from "../models/mongoose";
 import { uploadToCloudinary } from "../config/cloudinary";
 import logger from "../utils/logger";
 
-const KEYS = ["COMPANY_NAME", "COMPANY_TAGLINE", "COMPANY_LOGO", "COMPANY_FAVICON", "ANNOUNCEMENT_BAR"] as const;
+const KEYS = ["COMPANY_NAME", "COMPANY_TAGLINE", "COMPANY_LOGO", "COMPANY_FAVICON", "ANNOUNCEMENT_BAR", "ANNOUNCEMENT_BAR_ENABLED"] as const;
 type CompanyKey = (typeof KEYS)[number];
 
 const DEFAULT_HERO_CONFIG = {
@@ -182,6 +182,7 @@ export const updateCompanySettings = async (req: Request, res: Response) => {
       COMPANY_LOGO: null,
       COMPANY_FAVICON: null,
       ANNOUNCEMENT_BAR: null,
+      ANNOUNCEMENT_BAR_ENABLED: null,
     };
     for (const row of rows) settings[row.key] = row.value;
 
@@ -189,5 +190,27 @@ export const updateCompanySettings = async (req: Request, res: Response) => {
   } catch (err: any) {
     logger.error("updateCompanySettings error", err);
     res.status(500).json({ message: "Error updating company settings" });
+  }
+};
+
+// PATCH /api/admin/announcement-toggle  — admin + super admin
+// Body: { enabled: boolean }
+export const toggleAnnouncementBar = async (req: Request, res: Response) => {
+  try {
+    const { enabled } = req.body as { enabled: boolean };
+    if (typeof enabled !== "boolean") {
+      res.status(400).json({ message: "'enabled' must be a boolean" });
+      return;
+    }
+    const value = enabled ? "true" : "false";
+    await prisma.appSetting.upsert({
+      where: { key: "ANNOUNCEMENT_BAR_ENABLED" },
+      update: { value },
+      create: { key: "ANNOUNCEMENT_BAR_ENABLED", value },
+    });
+    res.status(200).json({ message: `Announcement bar ${enabled ? "enabled" : "disabled"}`, enabled });
+  } catch (err: any) {
+    logger.error("toggleAnnouncementBar error", err);
+    res.status(500).json({ message: "Error toggling announcement bar" });
   }
 };

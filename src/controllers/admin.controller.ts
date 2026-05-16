@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
-import { User, Product, Order } from "../models/mongoose";
+import { User, Product, Order, OrderItem } from "../models/mongoose";
 import logger from "../utils/logger";
 import { createAuditLog } from "../utils/auditLog";
 
@@ -208,19 +208,16 @@ export const getDashboardData = async (_req: Request, res: Response) => {
       // Payment methods
       Order.aggregate([{ $match: { paymentMethod: "ONLINE" } }, { $group: { _id: null, total: { $sum: "$finalAmount" }, count: { $sum: 1 } } }]),
       Order.aggregate([{ $match: { paymentMethod: "POD" } }, { $group: { _id: null, total: { $sum: "$finalAmount" }, count: { $sum: 1 } } }]),
-      // Category revenue
-      Order.find({ paymentStatus: "PAID" })
-        .select('items')
-        .populate({
-          path: 'items.productId',
-          select: 'categoryId',
-          populate: { path: 'categoryId', select: 'name' }
-        })
-        .limit(5000),
-      // Top products by revenue
-      Order.aggregate([
-        { $unwind: "$items" },
-        { $group: { _id: "$items.productId", totalPrice: { $sum: { $multiply: ["$items.price", "$items.quantity"] } }, totalQuantity: { $sum: "$items.quantity" } } },
+      // Category revenue — query OrderItem directly (items are NOT embedded in Order)
+      Order.find({ paymentStatus: "PAID" }).select('_id').limit(5000).then(async (paidOrders) => {
+        const paidIds = paidOrders.map((o: any) => o._id);
+        return OrderItem.find({ orderId: { $in: paidIds } })
+          .populate({ path: 'productId', select: 'categoryId', populate: { path: 'categoryId', select: 'name' } })
+          .limit(50000);
+      }),
+      // Top products by revenue — aggregate OrderItem directly
+      OrderItem.aggregate([
+        { $group: { _id: "$productId", totalPrice: { $sum: { $multiply: ["$price", "$quantity"] } }, totalQuantity: { $sum: "$quantity" } } },
         { $sort: { totalPrice: -1 } },
         { $limit: 5 }
       ]),
@@ -244,15 +241,14 @@ export const getDashboardData = async (_req: Request, res: Response) => {
 
     // ── Build category breakdown ───────────────────────────────────────────
     const catMap: Record<string, { name: string; revenue: number; unitsSold: number }> = {};
-    for (const order of categoryOrderItems) {
-      if (!order.items) continue;
-      for (const item of order.items) {
-        const cat = (item as any).productId?.categoryId;
-        if (!cat) continue;
-        if (!catMap[cat.id]) catMap[cat.id] = { name: cat.name, revenue: 0, unitsSold: 0 };
-        catMap[cat.id].revenue += item.price * item.quantity;
-        catMap[cat.id].unitsSold += item.quantity;
-      }
+    for (const item of categoryOrderItems) {
+      const cat = (item as any).productId?.categoryId;
+      if (!cat) continue;
+      const catKey = cat._id?.toString() ?? cat.id?.toString();
+      if (!catKey) continue;
+      if (!catMap[catKey]) catMap[catKey] = { name: cat.name, revenue: 0, unitsSold: 0 };
+      catMap[catKey].revenue += item.price * item.quantity;
+      catMap[catKey].unitsSold += item.quantity;
     }
     const topCategories = Object.entries(catMap)
       .map(([id, v]) => ({ id, ...v }))

@@ -48,6 +48,9 @@ const ALLOWED_ORIGINS = env.ALLOWED_ORIGINS
   .map((o) => o.trim())
   .filter(Boolean);
 
+
+//changed the cors configuration to allow the mobile devices ..............................................
+
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -61,6 +64,14 @@ app.use(
     credentials: true,
   }),
 );
+
+
+// app.use(
+//   cors({
+//     origin: true,
+//     credentials: true,
+//   })
+// );
 
 
 process.on('uncaughtException', (err) => {
@@ -87,6 +98,8 @@ app.use("/api", generalLimiter);
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // ── Socket.IO ─────────────────────────────────────────────────────────────────
+
+
 const io = new Server(server, {
   cors: {
     origin: ALLOWED_ORIGINS,
@@ -94,6 +107,16 @@ const io = new Server(server, {
   },
   transports: ["websocket", "polling"],
 });
+
+// const io = new Server(server, {
+//   cors: {
+//     origin: true,
+//     credentials: true,
+//   },
+//   transports: ["websocket", "polling"],
+// });
+
+
 initSocket(io);
 app.set("socketio", io);
 

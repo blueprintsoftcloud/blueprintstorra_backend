@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { Cart, Product } from "../models/mongoose";
+import { Cart, CartItem, Product } from "../models/mongoose";
 import logger from "../utils/logger";
 
 // Helper: emit customer-cart-update to admin room
@@ -14,8 +14,8 @@ const emitCartUpdate = (req: Request, userId: string, cartCount: number) => {
 
 // Helper: compute cart total from CartItems with live product prices
 const computeCartTotal = (
-  items: Array<{ quantity: number; product: { price: number } }>,
-) => items.reduce((sum, item) => sum + item.product.price * item.quantity, 0);
+  items: Array<{ quantity: number; product: { price: number } | null }>,
+) => items.reduce((sum, item) => sum + (item.product?.price ?? 0) * item.quantity, 0);
 
 const CART_INCLUDE = {
   items: {
@@ -53,20 +53,30 @@ export const cartAdd = async (req: Request, res: Response) => {
         .json({ message: "Product not found or unavailable" });
     }
 
-    // Get or create cart
+    // Get or create cart (atomic upsert via Mongoose to avoid race conditions and
+    // the Prisma bridge's create() not honouring the include argument)
     let cart = await prisma.cart.findUnique({
       where: { userId },
       include: CART_INCLUDE,
     });
     if (!cart) {
-      cart = await prisma.cart.create({
-        data: { userId },
+      // findOneAndUpdate with upsert is atomic — safe for concurrent requests
+      await Cart.findOneAndUpdate(
+        { userId },
+        { $setOnInsert: { userId } },
+        { upsert: true, new: true },
+      );
+      cart = await prisma.cart.findUnique({
+        where: { userId },
         include: CART_INCLUDE,
       });
     }
+    if (!cart) return res.status(500).json({ message: "Failed to initialize cart" });
+    // Safety: bridge may omit items array on a brand-new cart
+    if (!Array.isArray(cart.items)) cart = { ...cart, items: [] };
 
     // Upsert cart item
-    const existingItem = cart.items.find((i: any) => String(i.productId) === String(productId));
+    const existingItem = (cart.items as any[]).find((i: any) => String(i.productId) === String(productId));
     if (existingItem) {
       await prisma.cartItem.update({
         where: { id: existingItem.id },
@@ -104,42 +114,69 @@ export const cartList = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
 
-    let cart = await prisma.cart.findUnique({
-      where: { userId },
-      include: CART_INCLUDE,
-    });
-
+    // Use native Mongoose instead of the Prisma bridge to guarantee product data
+    // is always attached. The bridge's nested attachRelations can intermittently
+    // fail to populate the product relation, causing the cart to appear empty.
+    const cart = await Cart.findOne({ userId }).lean();
     if (!cart) {
-      return res
-        .status(200)
-        .json({
-          message: "Cart is empty",
-          cart: null,
-          quantity: 0,
-          totalAmount: 0,
-        });
-    }
-
-    // Validate: remove items whose product or category was deleted / deactivated
-    const invalidItems = cart.items.filter(
-      (i: any) => !i.product || !i.product.isActive,
-    );
-    if (invalidItems.length > 0) {
-      await prisma.cartItem.deleteMany({
-        where: { id: { in: invalidItems.map((i: any) => i.id) } },
-      });
-      cart = await prisma.cart.findUnique({
-        where: { userId },
-        include: CART_INCLUDE,
+      return res.status(200).json({
+        message: "Cart is empty",
+        cart: null,
+        quantity: 0,
+        totalAmount: 0,
       });
     }
 
-    const totalAmount = computeCartTotal(cart!.items);
-    const totalQuantity = cart!.items.reduce((sum: number, i: any) => sum + i.quantity, 0);
+    // Fetch cart items and populate product via Mongoose (reliable, no bridge layer)
+    const rawItems = await CartItem
+      .find({ cartId: cart._id })
+      .populate<{ productId: any }>('productId', 'name price image stock isActive categoryId')
+      .lean();
+
+    // Validate: remove items whose product no longer exists or is inactive
+    const invalidIds = rawItems
+      .filter((i) => !i.productId || !(i.productId as any).isActive)
+      .map((i) => i._id);
+    if (invalidIds.length > 0) {
+      await CartItem.deleteMany({ _id: { $in: invalidIds } });
+    }
+
+    // Build items in the shape the frontend expects: { ..., product: { _id, name, ... } }
+    const validItems = rawItems
+      .filter((i) => i.productId && (i.productId as any).isActive)
+      .map((i) => {
+        const prod = i.productId as any;
+        return {
+          _id: String(i._id),
+          id: String(i._id),
+          cartId: String(i.cartId),
+          productId: String(prod._id),
+          quantity: i.quantity,
+          selectedSize: (i as any).selectedSize ?? null,
+          product: {
+            _id: String(prod._id),
+            id: String(prod._id),
+            name: prod.name,
+            price: prod.price,
+            image: prod.image,
+            stock: prod.stock,
+            isActive: prod.isActive,
+            categoryId: prod.categoryId ? String(prod.categoryId) : null,
+          },
+        };
+      });
+
+    const totalAmount = validItems.reduce((sum, i) => sum + i.product.price * i.quantity, 0);
+    const totalQuantity = validItems.reduce((sum, i) => sum + i.quantity, 0);
 
     res.status(200).json({
       message: "Cart fetched and validated successfully",
-      cart,
+      cart: {
+        _id: String(cart._id),
+        id: String(cart._id),
+        userId: String(cart.userId),
+        items: validItems,
+      },
       quantity: totalQuantity,
       totalAmount,
     });

@@ -8,17 +8,16 @@ import logger from "../utils/logger";
 export const getMyProfile = async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: {
-        id: true,
-        username: true,
-        email: true,
-        role: true,
-        avatar: true,
-        staffProfile: { select: { permissions: true, isActive: true } },
-      },
-    });
+    const [user, profile] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: userId },
+        select: { id: true, username: true, email: true, role: true, avatar: true },
+      }),
+      prisma.staffProfile.findUnique({
+        where: { userId },
+        select: { permissions: true, isActive: true },
+      }),
+    ]);
     if (!user) {
       res.status(404).json({ message: "Staff not found" });
       return;
@@ -29,8 +28,8 @@ export const getMyProfile = async (req: Request, res: Response) => {
       email: user.email,
       role: user.role,
       avatar: user.avatar,
-      permissions: user.staffProfile?.permissions ?? [],
-      isActive: user.staffProfile?.isActive ?? false,
+      permissions: profile?.permissions ?? [],
+      isActive: profile?.isActive ?? false,
     });
   } catch (err: any) {
     logger.error("getMyProfile error", err);
@@ -162,16 +161,47 @@ export const getStaffDashboard = async (_req: Request, res: Response) => {
 export const listStaff = async (req: Request, res: Response) => {
   try {
     const managedBy = req.user!.id;
-    const staff = await prisma.staffProfile.findMany({
+
+    // Fetch profiles first
+    const profiles = await prisma.staffProfile.findMany({
       where: { managedBy },
-      include: {
-        user: {
-          select: { id: true, username: true, email: true, phone: true, createdAt: true, avatar: true },
-        },
-      },
       orderBy: { createdAt: "desc" },
     });
-    res.json(staff);
+
+    if (profiles.length === 0) {
+      res.json([]);
+      return;
+    }
+
+    // Fetch the linked users in a single query using the collected userIds
+    const userIds = profiles.map((p: any) => p.userId).filter(Boolean);
+    const users = await prisma.user.findMany({
+      where: { id: { in: userIds } },
+      select: { id: true, username: true, email: true, phone: true, createdAt: true, avatar: true },
+    });
+    const userMap: Record<string, any> = {};
+    users.forEach((u: any) => { userMap[u.id] = u; });
+
+    const result = profiles
+      .filter((p: any) => userMap[p.userId] != null)   // skip orphaned profiles
+      .map((p: any) => ({
+        id: p.id,
+        isActive: p.isActive,
+        permissions: p.permissions ?? [],
+        notes: p.notes ?? null,
+        createdAt: p.createdAt,
+        user: userMap[p.userId],
+      }));
+
+    // Clean up any orphaned StaffProfiles whose User no longer exists
+    const orphanIds = profiles
+      .filter((p: any) => userMap[p.userId] == null)
+      .map((p: any) => p.id);
+    if (orphanIds.length > 0) {
+      await prisma.staffProfile.deleteMany({ where: { id: { in: orphanIds } } });
+    }
+
+    res.json(result);
   } catch (err: any) {
     logger.error("listStaff error", err);
     res.status(500).json({ message: "Error fetching staff list" });
@@ -267,8 +297,10 @@ export const createStaff = async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     logger.error("createStaff error", err);
-    if (err?.code === "P2002") {
-      const field = err?.meta?.target?.includes("email") ? "email address" : "phone number";
+    // Mongoose duplicate key (11000) or Prisma equivalent (P2002)
+    if (err?.code === 11000 || err?.code === "P2002") {
+      const key = err?.keyPattern ?? {};
+      const field = key.email || err?.meta?.target?.includes?.("email") ? "email address" : "phone number";
       res.status(409).json({ message: `An account with this ${field} already exists.` });
       return;
     }
@@ -340,6 +372,15 @@ export const updateStaff = async (req: Request, res: Response) => {
     if (phone && !/^[6-9][0-9]{9}$/.test(String(phone))) {
       res.status(400).json({ message: "Phone must be a valid 10-digit Indian mobile number" });
       return;
+    }
+    if (phone) {
+      const phoneConflict = await prisma.user.findFirst({
+        where: { phone: String(phone), id: { not: profile.userId } },
+      });
+      if (phoneConflict) {
+        res.status(409).json({ message: "Another account with this phone number already exists" });
+        return;
+      }
     }
 
     if (username && username.trim().length < 3) {
@@ -460,7 +501,9 @@ export const deleteStaff = async (req: Request, res: Response) => {
       return;
     }
 
-    // Deleting the profile cascades to deleting the User (via onDelete: Cascade on userId FK)
+    // Delete both the StaffProfile and the User.
+    // Mongoose has no cascade, so both must be deleted explicitly.
+    await prisma.staffProfile.delete({ where: { id: id as string } });
     await prisma.user.delete({ where: { id: profile.userId } });
     res.json({ message: "Staff member removed" });
   } catch (err: any) {

@@ -66,6 +66,21 @@ export const categoryUpdate = async (req: Request, res: Response) => {
       return res.status(404).json({ message: "Category not found" });
     }
 
+    if (code && code !== existing.code) {
+      const duplicate = await prisma.category.findFirst({
+        where: { 
+          code: code,
+          id: { not: id } // Crucial: Ignore the current category being edited
+        }
+      });
+
+      if (duplicate) {
+        return res.status(409).json({ 
+          message: `Category code "${code}" already existed.` 
+        });
+      }
+    }
+
     let imageUrl = existing.image;
     if (req.file) {
       imageUrl = await uploadToCloudinary(

@@ -260,7 +260,7 @@ export const placeOrder = async (req: Request, res: Response) => {
     await notifyUsers(req, order.id, `New Order from ${user!.username}: ₹${finalAmount}`, "NEW_ORDER", userId, orderRecipients);
     await notifyUsers(req, order.id, `Your order #${shortId} has been initiated. Proceed to payment.`, "NEW_ORDER", userId, [userId]);
 
-    res.status(200).json({ order, rzpOrder });
+    res.status(200).json({ order, rzpOrder, razorpay_key_id: env.RAZORPAY_KEY_ID });
   } catch (err: any) {
     logger.error("placeOrder error", err);
     res
@@ -854,11 +854,12 @@ export const getCustomerTransactions = async (req: Request, res: Response) => {
       };
     }
 
-    const [transactions, total] = await Promise.all([
+    const [rawTransactions, total] = await Promise.all([
       prisma.order.findMany({
         where,
         select: {
           id: true,
+          userId: true,
           createdAt: true,
           paymentMethod: true,
           paymentStatus: true,
@@ -883,6 +884,33 @@ export const getCustomerTransactions = async (req: Request, res: Response) => {
       }),
       prisma.order.count({ where }),
     ]);
+
+    // Prisma MongoDB relations can return null when the referenced user document
+    // has a schema mismatch or a data validation issue. Fall back to a direct
+    // Mongoose lookup for any order whose Prisma user relation resolved to null.
+    const missingUserIds = rawTransactions
+      .filter((tx) => !tx.user)
+      .map((tx) => tx.userId);
+
+    const fallbackMap: Record<string, { id: string; username: string; email: string | null; phone: string | null }> = {};
+    if (missingUserIds.length > 0) {
+      const mongooseUsers = await User.find({ _id: { $in: missingUserIds } })
+        .select("_id username email phone")
+        .lean();
+      for (const mu of mongooseUsers as any[]) {
+        fallbackMap[mu._id.toString()] = {
+          id: mu._id.toString(),
+          username: mu.username,
+          email: mu.email ?? null,
+          phone: mu.phone ?? null,
+        };
+      }
+    }
+
+    const transactions = rawTransactions.map((tx) => ({
+      ...tx,
+      user: tx.user ?? fallbackMap[tx.userId] ?? null,
+    }));
 
     res.status(200).json({
       transactions,

@@ -889,8 +889,8 @@ export const getCustomerTransactions = async (req: Request, res: Response) => {
     // has a schema mismatch or a data validation issue. Fall back to a direct
     // Mongoose lookup for any order whose Prisma user relation resolved to null.
     const missingUserIds = rawTransactions
-      .filter((tx) => !tx.user)
-      .map((tx) => tx.userId);
+      .filter((tx: typeof rawTransactions[0]) => !tx.user)
+      .map((tx: typeof rawTransactions[0]) => tx.userId);
 
     const fallbackMap: Record<string, { id: string; username: string; email: string | null; phone: string | null }> = {};
     if (missingUserIds.length > 0) {
@@ -907,7 +907,7 @@ export const getCustomerTransactions = async (req: Request, res: Response) => {
       }
     }
 
-    const transactions = rawTransactions.map((tx) => ({
+    const transactions = rawTransactions.map((tx: typeof rawTransactions[0]) => ({
       ...tx,
       user: tx.user ?? fallbackMap[tx.userId] ?? null,
     }));

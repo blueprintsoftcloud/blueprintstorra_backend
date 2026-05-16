@@ -349,7 +349,7 @@ const attachRelations = async (modelName: string, docs: any[], include: any) => 
       // doc._id may be a string (already serialized) or an ObjectId — normalize to ObjectId.
       const ids = docs
         .map((doc) => { const v = doc._id ?? doc.id; return v ? String(v) : null; })
-        .filter(Boolean)
+        .filter((id): id is string => id !== null)
         .map((id: string) => Types.ObjectId.isValid(id) ? new Types.ObjectId(id) : id);
       if (ids.length === 0) continue;
       const rawRelated = await MODEL_MAP[relation.foreignModel]

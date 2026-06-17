@@ -13,15 +13,49 @@ const DEFAULT_HERO_CONFIG = {
     "2": { title: "New Arrivals Just Dropped", subtitle: "Discover our latest curated pieces.", ctaText: "Explore Now", ctaLink: "/products", bgImage: "" },
     "3": { title: "Elegance Redefined", subtitle: "Timeless. Modern. Yours.", ctaText: "Shop Now", ctaLink: "/products", accentText: "New Season" },
     "4": { title: "Lets Create your Own Style", subtitle: "It is a long established fact that a reader will be distracted by the readable content of a page.", ctaText: "Shop Now", ctaLink: "/products", accentText: "Trendy Collections", highlightText: "Create", badgeText: "25%\nDiscount on Everything", bgImage: "" },
+    "5": {
+      title: "Elevate Your Style With Bold Fashion",
+      subtitle: "Discover our latest curated pieces for the season.",
+      ctaText: "Explore Collections",
+      ctaLink: "/products",
+      images: [
+        "https://images.unsplash.com/photo-1515886657613-9f3515b0c78f?auto=format&fit=crop&q=80&w=600",
+        "https://images.unsplash.com/photo-1519457431-44ccd64a579b?auto=format&fit=crop&q=80&w=400",
+        "https://images.unsplash.com/photo-1539109136881-3be0616acf4b?auto=format&fit=crop&q=80&w=600",
+        "https://images.unsplash.com/photo-1507679799987-c73779587ccf?auto=format&fit=crop&q=80&w=600",
+        "https://images.unsplash.com/photo-1492562080023-ab3db95bfbce?auto=format&fit=crop&q=80&w=600",
+        "https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&q=80&w=600",
+        "https://images.unsplash.com/photo-1501196354995-cbb51c65aaea?auto=format&fit=crop&q=80&w=400",
+      ],
+    },
   },
 };
 
 const DEFAULT_FOOTER_CONFIG = {
   activeTemplate: 1,
   templates: {
-    "1": { tagline: "We are a design house dedicated to the art of Indian textile. Our mission is to keep the loom alive while dressing the future." },
-    "2": { tagline: "Crafting timeless Indian fashion for the modern world." },
-    "3": { tagline: "From our looms to your wardrobe — authentically Indian.", newsletterTitle: "Stay in the loop" },
+    "1": {
+      tagline: "We are a design house dedicated to the art of Indian textile. Our mission is to keep the loom alive while dressing the future.",
+      instagramLink: "https://instagram.com",
+      facebookLink: "https://facebook.com",
+      twitterLink: "https://twitter.com",
+      mailLink: "info@yourbrand.com",
+    },
+    "2": {
+      tagline: "Crafting timeless Indian fashion for the modern world.",
+      instagramLink: "https://instagram.com",
+      facebookLink: "https://facebook.com",
+      twitterLink: "https://twitter.com",
+      mailLink: "info@yourbrand.com",
+    },
+    "3": {
+      tagline: "From our looms to your wardrobe — authentically Indian.",
+      newsletterTitle: "Stay in the loop",
+      instagramLink: "https://instagram.com",
+      facebookLink: "https://facebook.com",
+      twitterLink: "https://twitter.com",
+      mailLink: "info@yourbrand.com",
+    },
   },
 };
 

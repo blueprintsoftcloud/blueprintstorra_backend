@@ -7,13 +7,13 @@ import { env } from "./env";
 const generateRefreshTokenValue = () => crypto.randomBytes(32).toString("hex");
 
 export const generateToken = async (
-  user: { id: string; email: string; role: string },
+  user: { id: string; email: string; role: string; isPrimaryAdmin?: boolean; primaryAdminId?: string | null },
   res: Response,
 ): Promise<void> => {
   const accessToken = jwt.sign(
-    { id: user.id, email: user.email, role: user.role },
+    { id: user.id, email: user.email, role: user.role, isPrimaryAdmin: user.isPrimaryAdmin ?? false, primaryAdminId: user.primaryAdminId ?? null },
     env.JWT_SECRET,
-    { expiresIn: "1h" },
+    { expiresIn: "16m" },
   );
 
   const refreshTokenValue = generateRefreshTokenValue();
@@ -48,7 +48,7 @@ export const generateToken = async (
   }
 
   res.cookie("jwt", accessToken, {
-    maxAge: 60 * 60 * 1000, // 1 hour
+    maxAge: 16 * 60 * 1000, // 16 min
     ...cookieOpts,
     path: "/",
   });

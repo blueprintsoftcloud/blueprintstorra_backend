@@ -19,7 +19,13 @@ export const getWishlist = async (req: Request, res: Response) => {
     const userId = req.user!.id;
 
     const items = await prisma.wishlist.findMany({
-      where: { userId },
+      where: {
+        userId,
+        product: {
+          isActive: true,
+          category: { isActive: true }
+        }
+      },
       include: {
         product: {
           select: {
@@ -63,10 +69,10 @@ export const addToWishlist = async (req: Request, res: Response) => {
 
     const product = await prisma.product.findUnique({
       where: { id: productId },
-      select: { id: true },
+      include: { category: { select: { isActive: true } } },
     });
 
-    if (!product) {
+    if (!product || !product.isActive || (product.category && !product.category.isActive)) {
       return res.status(404).json({ message: "Product not found" });
     }
 

@@ -3,6 +3,7 @@ import bcrypt from "bcrypt";
 import { User, StaffProfile, Product, Order } from "../models/mongoose";
 import { STAFF_PERMISSIONS, StaffPermission } from "../config/staffPermissions";
 import logger from "../utils/logger";
+import { checkQuota } from "../utils/quotaChecker";
 
 // ── GET /api/staff/profile  (staff's own profile + permissions) ────────────
 export const getMyProfile = async (req: Request, res: Response) => {
@@ -103,7 +104,7 @@ export const getStaffDashboard = async (_req: Request, res: Response) => {
     const orderStatus = statuses.map((s, i) => ({ status: s, count: statusCounts[i] }));
 
     // Revenue by day — last 7 days (bar chart)
-    const recentOrders = await prisma.order.findMany({
+    const recentPaidOrders = await prisma.order.findMany({
       where: { paymentStatus: "PAID", createdAt: { gte: sevenDaysAgo } },
       select: { finalAmount: true, createdAt: true },
     });
@@ -114,7 +115,7 @@ export const getStaffDashboard = async (_req: Request, res: Response) => {
       const key = d.toISOString().split("T")[0];
       byDay[key] = { date: key, revenue: 0, orders: 0 };
     }
-    for (const o of recentOrders) {
+    for (const o of recentPaidOrders) {
       const key = o.createdAt.toISOString().split("T")[0];
       if (byDay[key]) { byDay[key].revenue += o.finalAmount; byDay[key].orders += 1; }
     }
@@ -140,6 +141,33 @@ export const getStaffDashboard = async (_req: Request, res: Response) => {
       orderCount: p._count.id,
     }));
 
+    // Recent orders (last 5) for orders table widget
+    const recentOrders = await prisma.order.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 5,
+      select: {
+        id: true,
+        finalAmount: true,
+        orderStatus: true,
+        paymentStatus: true,
+        paymentMethod: true,
+        createdAt: true,
+        user: { select: { username: true, email: true } },
+      },
+    });
+
+    // Payment method breakdown (COD vs ONLINE)
+    const paymentMethodsRaw = await prisma.order.groupBy({
+      by: ["paymentMethod"],
+      _count: { id: true },
+      _sum: { finalAmount: true },
+    });
+    const paymentMethods = paymentMethodsRaw.map((pm: any) => ({
+      method: pm.paymentMethod,
+      count: pm._count.id,
+      revenue: pm._sum.finalAmount ?? 0,
+    }));
+
     res.json({
       summary: {
         orders: { total: totalOrders, thisMonth: ordersThisMonth, processing: processingOrders, growthPct: pct(ordersThisMonth, ordersPrevMonth) },
@@ -161,10 +189,35 @@ export const getStaffDashboard = async (_req: Request, res: Response) => {
 export const listStaff = async (req: Request, res: Response) => {
   try {
     const managedBy = req.user!.id;
+    const isSuperAdmin = req.user!.role === "SUPER_ADMIN";
+
+    const { search } = req.query as Record<string, string | undefined>;
+
+    const profileWhere: any = isSuperAdmin ? {} : { managedBy };
+
+    if (search && search.trim() !== "") {
+      const term = search.trim();
+      const matchingUsers = await prisma.user.findMany({
+        where: {
+          OR: [
+            { username: { contains: term, mode: "insensitive" } },
+            { email: { contains: term, mode: "insensitive" } },
+            { phone: { contains: term, mode: "insensitive" } },
+          ],
+        },
+        select: { id: true },
+      });
+      const matchUserIds = matchingUsers.map((u: any) => u.id);
+
+      profileWhere.OR = [
+        { userId: { in: matchUserIds } },
+        { notes: { contains: term, mode: "insensitive" } },
+      ];
+    }
 
     // Fetch profiles first
     const profiles = await prisma.staffProfile.findMany({
-      where: { managedBy },
+      where: profileWhere,
       orderBy: { createdAt: "desc" },
     });
 
@@ -262,6 +315,8 @@ export const createStaff = async (req: Request, res: Response) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    await checkQuota(req, 'staff');
+
     // Create user + profile in a transaction
     const result = await prisma.$transaction(async (tx: any) => {
       const user = await tx.user.create({
@@ -312,10 +367,11 @@ export const createStaff = async (req: Request, res: Response) => {
 export const getStaffById = async (req: Request, res: Response) => {
   try {
     const managedBy = req.user!.id;
+    const isSuperAdmin = req.user!.role === "SUPER_ADMIN";
     const { id } = req.params;
 
     const profile = await prisma.staffProfile.findFirst({
-      where: { id: id as string, managedBy },
+      where: isSuperAdmin ? { id: id as string } : { id: id as string, managedBy },
       include: {
         user: {
           select: { id: true, username: true, email: true, phone: true, createdAt: true },
@@ -337,6 +393,7 @@ export const getStaffById = async (req: Request, res: Response) => {
 export const updateStaff = async (req: Request, res: Response) => {
   try {
     const managedBy = req.user!.id;
+    const isSuperAdmin = req.user!.role === "SUPER_ADMIN";
     const { id } = req.params;
     const { username, email, phone, notes, newPassword } = req.body as {
       username?: string;
@@ -347,7 +404,7 @@ export const updateStaff = async (req: Request, res: Response) => {
     };
 
     const profile = await prisma.staffProfile.findFirst({
-      where: { id: id as string, managedBy },
+      where: isSuperAdmin ? { id: id as string } : { id: id as string, managedBy },
     });
     if (!profile) {
       res.status(404).json({ message: "Staff member not found" });
@@ -431,6 +488,7 @@ export const updateStaff = async (req: Request, res: Response) => {
 export const updatePermissions = async (req: Request, res: Response) => {
   try {
     const managedBy = req.user!.id;
+    const isSuperAdmin = req.user!.role === "SUPER_ADMIN";
     const { id } = req.params;
     const { permissions } = req.body as { permissions: string[] };
 
@@ -444,7 +502,7 @@ export const updatePermissions = async (req: Request, res: Response) => {
     );
 
     const profile = await prisma.staffProfile.findFirst({
-      where: { id: id as string, managedBy },
+      where: isSuperAdmin ? { id: id as string } : { id: id as string, managedBy },
     });
     if (!profile) {
       res.status(404).json({ message: "Staff member not found" });
@@ -466,10 +524,11 @@ export const updatePermissions = async (req: Request, res: Response) => {
 export const toggleStaffActive = async (req: Request, res: Response) => {
   try {
     const managedBy = req.user!.id;
+    const isSuperAdmin = req.user!.role === "SUPER_ADMIN";
     const { id } = req.params;
 
     const profile = await prisma.staffProfile.findFirst({
-      where: { id: id as string, managedBy },
+      where: isSuperAdmin ? { id: id as string } : { id: id as string, managedBy },
     });
     if (!profile) {
       res.status(404).json({ message: "Staff member not found" });
@@ -491,10 +550,11 @@ export const toggleStaffActive = async (req: Request, res: Response) => {
 export const deleteStaff = async (req: Request, res: Response) => {
   try {
     const managedBy = req.user!.id;
+    const isSuperAdmin = req.user!.role === "SUPER_ADMIN";
     const { id } = req.params;
 
     const profile = await prisma.staffProfile.findFirst({
-      where: { id: id as string, managedBy },
+      where: isSuperAdmin ? { id: id as string } : { id: id as string, managedBy },
     });
     if (!profile) {
       res.status(404).json({ message: "Staff member not found" });

@@ -1,7 +1,7 @@
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import { User, Otp } from "../models/mongoose";
+import { User, Otp, Subscription, StaffProfile } from "../models/mongoose";
 import { generateToken } from "../config/tokens";
 import {
   generateOtpCode,
@@ -45,10 +45,13 @@ export const signup = async (req: Request, res: Response) => {
       phone: String(phone),
       password: hashedPassword,
       role,
+      // Mark the shop owner so the login barrier in verifyLoginOtp can fire.
+      // Every subsequent signup produces a CUSTOMER, so this stays false for them.
+      isPrimaryAdmin: role === 'ADMIN',
     });
 
     await generateToken(
-      { id: user.id, email: user.email ?? "", role: user.role },
+      { id: user.id, email: user.email ?? "", role: user.role, isPrimaryAdmin: user.isPrimaryAdmin ?? false },
       res,
     );
 
@@ -91,6 +94,34 @@ export const login = async (req: Request, res: Response) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch)
       return res.status(400).json({ message: "Password mismatched" });
+
+    // ── Subscription barrier
+    if (user.role === 'ADMIN') {
+      const lookupId = user.isPrimaryAdmin ? user._id : user.primaryAdminId;
+      if (!lookupId) {
+        return res.status(403).json({
+          message: 'Account error: Secondary Admin is not linked to a Primary account.',
+        });
+      }
+      const sub = await Subscription.findOne({ adminId: lookupId, status: 'ACTIVE' });
+      if (!sub) {
+        return res.status(403).json({
+          message: 'There is no active subscription found. Please connect with the Super Administrator to proceed with login.',
+        });
+      }
+    }
+
+    // ── Staff Active Status Barrier (shift-left)
+    if (user.role === 'STAFF') {
+      const staffProfile = await StaffProfile.findOne({ userId: user._id });
+      
+      // If the profile doesn't exist or isActive is false, block them instantly
+      if (!staffProfile || staffProfile.isActive === false) {
+        return res.status(403).json({
+          message: 'Your account has been deactivated. Please contact your administrator for access.',
+        });
+      }
+    }
 
     // Clear old OTPs, create new
     await Otp.deleteMany({ email });
@@ -144,14 +175,33 @@ export const verifyLoginOtp = async (req: Request, res: Response) => {
     if (!user)
       return res.status(400).json({ message: "User record not found." });
 
+    let primaryAdminId: string | null = null;
+    if (user.role === "STAFF") {
+      const staffProfile = await StaffProfile.findOne({ userId: user._id }).lean();
+      if (staffProfile) {
+        primaryAdminId = staffProfile.managedBy.toString();
+      }
+    } else {
+      primaryAdminId = user.primaryAdminId?.toString() ?? null;
+    }
+
     await generateToken(
-      { id: user.id, email: user.email ?? "", role: user.role },
+      {
+        id: user.id,
+        email: user.email ?? "",
+        role: user.role,
+        isPrimaryAdmin: user.isPrimaryAdmin ?? false,
+        primaryAdminId,
+      },
       res,
     );
 
-    return res
-      .status(200)
-      .json({ message: "Logged in successfully", role: user.role });
+    return res.status(200).json({
+      message: "Logged in successfully",
+      role: user.role,
+      isPrimaryAdmin: user.isPrimaryAdmin ?? false,
+      primaryAdminId,
+    });
   } catch (err: any) {
     logger.error("verifyLoginOtp error", err);
     return res
@@ -217,7 +267,7 @@ export const logout = async (req: Request, res: Response) => {
   try {
     // Identify the user so we can revoke their refresh token in the DB.
     // The route has no authMiddleware (to avoid a refresh-loop on forced logout),
-    // so we resolve the user id directly from the access token cookie.
+    // so we resolve the user id directly from the access token or refresh token cookies.
     //   • Valid token   → jwt.verify succeeds → use decoded id
     //   • Expired token → jwt.verify throws TokenExpiredError → jwt.decode gives us the id
     //   • No / tampered → skip DB cleanup (cookies already cleared above)
@@ -233,6 +283,20 @@ export const logout = async (req: Request, res: Response) => {
           // Token expired or otherwise unverifiable — still extract the payload
           // for DB cleanup only (no privilege is granted from this).
           const decoded = jwt.decode(token) as { id?: string } | null;
+          userId = decoded?.id;
+        }
+      }
+    }
+
+    // Layer 2 Fallback: Resolve userId from the refreshToken cookie itself
+    if (!userId) {
+      const refreshToken = req.cookies?.refreshToken as string | undefined;
+      if (refreshToken) {
+        try {
+          const verified = jwt.verify(refreshToken, env.REFRESH_TOKEN_SECRET) as { id: string };
+          userId = verified.id;
+        } catch {
+          const decoded = jwt.decode(refreshToken) as { id?: string } | null;
           userId = decoded?.id;
         }
       }
@@ -273,14 +337,37 @@ export const refreshTokens = async (req: Request, res: Response) => {
         .json({ message: "Invalid or revoked refresh token." });
     }
 
+    let primaryAdminId: string | null = null;
+    // Strict Access Revocation Check for Staff 
+    if (user.role === "STAFF") {
+      const staffProfile = await StaffProfile.findOne({ userId: user._id }).lean();
+      
+      if (!staffProfile || staffProfile.isActive === false) {
+        clearAuthCookies(res);
+        logger.warn(`Refresh blocked: Deactivated staff member attempted token refresh`, { userId: user._id });
+        return res
+          .status(403)
+          .json({ message: "Your account has been deactivated. Please contact your administrator." });
+      }
+      primaryAdminId = staffProfile.managedBy.toString();
+    } else {
+      primaryAdminId = user.primaryAdminId?.toString() ?? null;
+    }
+
     await generateToken(
-      { id: user.id, email: user.email ?? "", role: user.role },
+      {
+        id: user.id,
+        email: user.email ?? "",
+        role: user.role,
+        isPrimaryAdmin: user.isPrimaryAdmin ?? false,
+        primaryAdminId,
+      },
       res,
     );
 
     return res
       .status(200)
-      .json({ message: "Access token refreshed successfully." });
+      .json({ message: "Access token refreshed successfully.", isLoggedIn: true, role: user.role });
   } catch {
     clearAuthCookies(res);
     return res
@@ -409,7 +496,10 @@ export const registerCustomer = async (req: Request, res: Response) => {
       role: "CUSTOMER",
     });
 
-    await generateToken({ id: user.id, email: user.email ?? "", role: user.role }, res);
+    await generateToken(
+      { id: user.id, email: user.email ?? "", role: user.role, isPrimaryAdmin: user.isPrimaryAdmin ?? false, primaryAdminId: user.primaryAdminId?.toString() ?? null },
+      res,
+    );
     logger.info("registerCustomer: created user", { id: user.id });
     return res.status(201).json({
       message: "Account created successfully. Welcome!",
@@ -424,7 +514,8 @@ export const registerCustomer = async (req: Request, res: Response) => {
 
 // POST /api/auth/mobile/check-phone
 // Called before sending OTP on the Sign In screen.
-// Returns 200 if the phone is registered, 404 if not — no OTP is sent.
+// Returns 200 if the phone is a registered CUSTOMER/STAFF, 403 if it belongs to
+// an admin/superadmin (who must use email/password login), 404 if not found.
 export const checkPhoneExists = async (req: Request, res: Response) => {
   const { phone } = req.body as { phone: string };
   try {
@@ -435,6 +526,13 @@ export const checkPhoneExists = async (req: Request, res: Response) => {
         code: "NO_ACCOUNT",
       });
     }
+    // Block admin / superadmin from using the customer OTP flow
+    if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
+      return res.status(403).json({
+        message: "This account cannot be accessed via phone login. Please use the Admin Portal.",
+        code: "ADMIN_ROLE",
+      });
+    }
     return res.status(200).json({ exists: true });
   } catch (err: unknown) {
     const e = err as Error;
@@ -442,3 +540,5 @@ export const checkPhoneExists = async (req: Request, res: Response) => {
     return res.status(500).json({ message: "Server error." });
   }
 };
+
+

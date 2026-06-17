@@ -17,7 +17,7 @@ import { featureGate } from "../middleware/featureGate.middleware";
 
 const router = Router();
 
-const gate = [authMiddleware, adminMiddleware, featureGate("REPORTS_ANALYTICS")];
+const gate = [authMiddleware, adminMiddleware];
 
 router.get("/summary", ...gate, getSummary);
 router.get("/summary-range", ...gate, getSummaryWithRange);

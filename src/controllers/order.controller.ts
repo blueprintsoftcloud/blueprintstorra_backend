@@ -152,11 +152,14 @@ export const placeOrder = async (req: Request, res: Response) => {
     // Build order items + subtotal
     let subtotal = 0;
     const orderItems = eligibleItems.map((item: any) => {
-      subtotal += item.product.price * item.quantity;
+      const price = item.product.discount && item.product.discount > 0
+        ? item.product.price * (1 - item.product.discount / 100)
+        : item.product.price;
+      subtotal += price * item.quantity;
       return {
         productId: item.product.id,
         quantity: item.quantity,
-        price: item.product.price,
+        price: price,
       };
     });
 
@@ -186,7 +189,7 @@ export const placeOrder = async (req: Request, res: Response) => {
 
     if (couponId) {
       const coupon = await prisma.coupon.findUnique({ where: { id: couponId } });
-      if (coupon && coupon.isActive && (!coupon.expiresAt || coupon.expiresAt > new Date()) && (coupon.maxUses === null || coupon.usedCount < coupon.maxUses) && subtotal >= coupon.minOrderAmount) {
+      if (coupon && coupon.isActive && (!coupon.expiresAt || new Date(coupon.expiresAt).getTime() > Date.now()) && (coupon.maxUses === null || coupon.usedCount < coupon.maxUses) && subtotal >= coupon.minOrderAmount) {
         discountAmount = coupon.discountType === "PERCENTAGE"
           ? Math.round((subtotal * coupon.discountValue) / 100)
           : Math.min(coupon.discountValue, subtotal);
@@ -428,11 +431,14 @@ export const placeOrderPOD = async (req: Request, res: Response) => {
 
     let subtotal = 0;
     const orderItems = eligibleItems.map((item: any) => {
-      subtotal += item.product.price * item.quantity;
+      const price = item.product.discount && item.product.discount > 0
+        ? item.product.price * (1 - item.product.discount / 100)
+        : item.product.price;
+      subtotal += price * item.quantity;
       return {
         productId: item.product.id,
         quantity: item.quantity,
-        price: item.product.price,
+        price: price,
       };
     });
 
@@ -461,7 +467,7 @@ export const placeOrderPOD = async (req: Request, res: Response) => {
 
     if (couponId) {
       const coupon = await prisma.coupon.findUnique({ where: { id: couponId } });
-      if (coupon && coupon.isActive && (!coupon.expiresAt || coupon.expiresAt > new Date()) && (coupon.maxUses === null || coupon.usedCount < coupon.maxUses) && subtotal >= coupon.minOrderAmount) {
+      if (coupon && coupon.isActive && (!coupon.expiresAt || new Date(coupon.expiresAt).getTime() > Date.now()) && (coupon.maxUses === null || coupon.usedCount < coupon.maxUses) && subtotal >= coupon.minOrderAmount) {
         discountAmount = coupon.discountType === "PERCENTAGE"
           ? Math.round((subtotal * coupon.discountValue) / 100)
           : Math.min(coupon.discountValue, subtotal);

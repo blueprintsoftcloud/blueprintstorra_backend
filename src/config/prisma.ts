@@ -28,6 +28,7 @@ import {
   Attribute,
   AttributeValue,
   PasswordReset,
+  RentalBooking,
 } from '../models/mongoose';
 
 const MODEL_MAP: Record<string, any> = {
@@ -59,6 +60,7 @@ const MODEL_MAP: Record<string, any> = {
   attributevalue: AttributeValue,
   companysettings: CompanySettings,
   passwordreset: PasswordReset,
+  rentalbooking: RentalBooking,
 };
 
 const RELATION_MAP: Record<string, Record<string, { localField: string; foreignModel: string; foreignField: string; isArray?: boolean }>> = {
@@ -307,6 +309,11 @@ const buildProjection = (modelName: string, select: any) => {
   for (const [key, value] of Object.entries(select)) {
     if (value === true && !RELATION_MAP[modelName]?.[key]) {
       fields.push(convertFieldName(key));
+    } else if (RELATION_MAP[modelName]?.[key]) {
+      const relation = RELATION_MAP[modelName][key];
+      if (!relation.isArray && relation.localField) {
+        fields.push(convertFieldName(relation.localField));
+      }
     }
   }
   return fields.join(' ');
@@ -606,6 +613,11 @@ const buildAggregation = async (modelName: string, args: any) => {
       if (enabled) group[`_sum_${field}`] = { $sum: `$${field}` };
     }
   }
+  if (args._avg) {
+    for (const [field, enabled] of Object.entries(args._avg)) {
+      if (enabled) group[`_avg_${field}`] = { $avg: `$${field}` };
+    }
+  }
   if (args._count) {
     for (const [field, enabled] of Object.entries(args._count)) {
       if (enabled) group[`_count_${field}`] = { $sum: 1 };
@@ -618,11 +630,15 @@ const buildAggregation = async (modelName: string, args: any) => {
 
   const result = await model.aggregate(pipeline).exec();
   const row = result[0] ?? {};
-  const output = { _sum: {}, _count: {} } as any;
+  const output = { _sum: {}, _avg: {}, _count: {} } as any;
 
   for (const [key, value] of Object.entries(row)) {
     if (key.startsWith('_sum_')) {
       output._sum[key.slice(5)] = value;
+      continue;
+    }
+    if (key.startsWith('_avg_')) {
+      output._avg[key.slice(5)] = value;
       continue;
     }
     if (key.startsWith('_count_')) {
@@ -656,6 +672,13 @@ const buildGroupBy = async (modelName: string, args: any) => {
       }
     }
   }
+  if (args._avg) {
+    for (const [field, enabled] of Object.entries(args._avg)) {
+      if (enabled) {
+        groupStage[`_avg_${field}`] = { $avg: `$${convertFieldName(field)}` };
+      }
+    }
+  }
   if (args._count) {
     for (const [field, enabled] of Object.entries(args._count)) {
       if (enabled) {
@@ -669,7 +692,7 @@ const buildGroupBy = async (modelName: string, args: any) => {
   if (args.orderBy) {
     const sort: any = {};
     for (const [key, value] of Object.entries(args.orderBy)) {
-      if (key === '_sum' || key === '_count') {
+      if (key === '_sum' || key === '_avg' || key === '_count') {
         const sub = value as Record<string, string>;
         for (const [subKey, subValue] of Object.entries(sub)) {
           const path = `_${key}_${subKey}`;
@@ -691,16 +714,21 @@ const buildGroupBy = async (modelName: string, args: any) => {
       Object.assign(mapped, row._id);
     }
     mapped._sum = {};
+    mapped._avg = {};
     mapped._count = {};
     for (const [key, value] of Object.entries(row)) {
       if (key.startsWith('_sum_')) {
         mapped._sum[key.slice(5)] = value;
+      }
+      if (key.startsWith('_avg_')) {
+        mapped._avg[key.slice(5)] = value;
       }
       if (key.startsWith('_count_')) {
         mapped._count[key.slice(7)] = value;
       }
     }
     if (Object.keys(mapped._sum).length === 0) delete mapped._sum;
+    if (Object.keys(mapped._avg).length === 0) delete mapped._avg;
     if (Object.keys(mapped._count).length === 0) delete mapped._count;
     return mapped;
   });

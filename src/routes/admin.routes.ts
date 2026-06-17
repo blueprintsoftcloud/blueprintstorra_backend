@@ -24,6 +24,7 @@ import {
   getCustomerWishlist,
   getCustomerCart,
 } from "../controllers/customerTracker.controller";
+import rentalRouter from "./rental.routes";
 
 const router = Router();
 
@@ -73,5 +74,8 @@ router.put("/homepage-config/footer", authMiddleware, adminMiddleware, updateFoo
 router.get("/tracker/customers", authMiddleware, adminMiddleware, featureGate("CUSTOMER_ACTIVITY_TRACKER"), getTrackedCustomers);
 router.get("/tracker/customers/:userId/wishlist", authMiddleware, adminMiddleware, featureGate("CUSTOMER_ACTIVITY_TRACKER"), getCustomerWishlist);
 router.get("/tracker/customers/:userId/cart", authMiddleware, adminMiddleware, featureGate("CUSTOMER_ACTIVITY_TRACKER"), getCustomerCart);
+
+// Rental management routes under /api/admin/rentals
+router.use("/rentals", authMiddleware, adminMiddleware, featureGate("RENTAL_MANAGEMENT"), rentalRouter);
 
 export default router;

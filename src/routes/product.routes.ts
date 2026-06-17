@@ -4,6 +4,7 @@ import {
   productAdd,
   productUpdate,
   productDelete,
+  productToggleStatus,
 } from "../controllers/product.controller";
 import { authMiddleware } from "../middleware/auth.middleware";
 import { featureGate } from "../middleware/featureGate.middleware";
@@ -40,6 +41,13 @@ router.delete(
   adminOrStaff("PRODUCT_DELETE"),
   featureGate("PRODUCT_MANAGEMENT"),
   productDelete,
+);
+router.patch(
+  "/:id/status",
+  authMiddleware,
+  adminOrStaff("PRODUCT_EDIT"),
+  featureGate("PRODUCT_MANAGEMENT"),
+  productToggleStatus,
 );
 
 export default router;

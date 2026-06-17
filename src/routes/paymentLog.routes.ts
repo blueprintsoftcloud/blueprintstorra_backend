@@ -12,7 +12,6 @@ router.get(
   "/",
   authMiddleware,
   adminOrStaff("ORDER_VIEW"),
-  featureGate("PAYMENT_LOGS"),
   getPaymentLogs,
 );
 

@@ -9,6 +9,10 @@ declare global {
         id: string;
         email: string;
         role: "CUSTOMER" | "ADMIN" | "SUPER_ADMIN" | "STAFF";
+        /** True when this ADMIN is the tenant's primary shop owner. */
+        isPrimaryAdmin?: boolean;
+        /** The primary ADMIN's id for secondary admins; null/undefined for primaries. */
+        primaryAdminId?: string | null;
       };
     }
   }

@@ -3,6 +3,7 @@ import { Category, Product } from "../models/mongoose";
 import { deleteFromCloudinary, uploadToCloudinary } from "../config/cloudinary";
 import logger from "../utils/logger";
 import { createAuditLog } from "../utils/auditLog";
+import { checkQuota } from "../utils/quotaChecker";
 
 // GET /api/categories
 export const categoryList = async (req: Request, res: Response) => {
@@ -26,6 +27,8 @@ export const categoryAdd = async (req: Request, res: Response) => {
     if (!code || !name) {
       return res.status(400).json({ message: "Code and Name are required" });
     }
+
+    await checkQuota(req, 'categories');
 
     // Upload image to Cloudinary if provided
     let imageUrl: string | null = null;
@@ -185,3 +188,48 @@ export const categoryDelete = async (req: Request, res: Response) => {
       .json({ message: "Error in category Delete", error: err.message });
   }
 };
+
+// PATCH /api/category/:id/status (admin)
+export const categoryToggleStatus = async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const { isActive } = req.body;
+
+    if (isActive === undefined || typeof isActive !== "boolean") {
+      return res.status(400).json({ message: "isActive status must be a boolean" });
+    }
+
+    const category = await prisma.category.findUnique({ where: { id } });
+    if (!category) {
+      return res.status(404).json({ message: "Category not found" });
+    }
+
+    const updated = await prisma.category.update({
+      where: { id },
+      data: { isActive },
+    });
+
+    // Enforce that all products under the category match this active/inactive status
+    await prisma.product.updateMany({
+      where: { categoryId: id },
+      data: { isActive },
+    });
+
+    await createAuditLog({
+      req,
+      action: isActive ? "ENABLE_CATEGORY" : "DISABLE_CATEGORY",
+      entity: "Category",
+      entityId: id,
+      details: { name: category.name, isActive },
+    });
+
+    res.status(200).json({
+      message: `Category ${isActive ? "enabled" : "disabled"} successfully along with all products under it`,
+      category: updated,
+    });
+  } catch (err: any) {
+    logger.error("categoryToggleStatus error", err);
+    res.status(500).json({ message: "Error toggling category status", error: err.message });
+  }
+};
+

@@ -6,19 +6,7 @@
 import { Request, Response, NextFunction } from "express";
 import { ZodError } from "zod";
 import logger from "../utils/logger";
-
-// Use this class to throw known errors from controllers
-export class AppError extends Error {
-  public statusCode: number;
-  public isOperational: boolean;
-
-  constructor(statusCode: number, message: string, isOperational = true) {
-    super(message);
-    this.statusCode = statusCode;
-    this.isOperational = isOperational;
-    Object.setPrototypeOf(this, AppError.prototype);
-  }
-}
+import { AppError } from "../utils/AppError";
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 export const errorHandler = (

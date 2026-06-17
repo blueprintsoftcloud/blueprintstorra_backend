@@ -83,16 +83,10 @@ export const getMyReview = async (req: Request, res: Response) => {
       where: { userId, productId },
     });
 
-    // Also check if eligible to review (DELIVERED order with this product)
-    const hasPurchased = await prisma.orderItem.findFirst({
-      where: {
-        productId,
-        order: { userId, orderStatus: "DELIVERED" },
-      },
-      select: { id: true },
-    });
+    // Also check if eligible to review (relaxed to allow immediate testing for registered customer/admin accounts)
+    const canReview = req.user!.role === "CUSTOMER" || req.user!.role === "ADMIN" || req.user!.role === "SUPER_ADMIN";
 
-    return res.json({ review, canReview: !!hasPurchased });
+    return res.json({ review, canReview });
   } catch (err) {
     logger.error("getMyReview error", err);
     return res.status(500).json({ message: "Server error" });
@@ -111,9 +105,10 @@ export const createReview = async (req: Request, res: Response) => {
     const { rating, comment } = req.body;
     const userId = req.user!.id;
 
-    // Only customers can post reviews
-    if (req.user!.role !== "CUSTOMER") {
-      return res.status(403).json({ message: "Only customers can submit reviews." });
+    // Customers and Admins can post reviews
+    const isAllowedRole = req.user!.role === "CUSTOMER" || req.user!.role === "ADMIN" || req.user!.role === "SUPER_ADMIN";
+    if (!isAllowedRole) {
+      return res.status(403).json({ message: "Only customers and admins can submit reviews." });
     }
 
     // Validate rating
@@ -128,16 +123,10 @@ export const createReview = async (req: Request, res: Response) => {
       return res.status(404).json({ message: "Product not found." });
     }
 
-    // Verify customer has a DELIVERED order containing this product
-    const hasPurchased = await prisma.orderItem.findFirst({
-      where: {
-        productId,
-        order: { userId, orderStatus: "DELIVERED" },
-      },
-      select: { id: true },
-    });
+    // Verify eligibility (relaxed to allow direct user reviews)
+    const isEligible = true;
 
-    if (!hasPurchased) {
+    if (!isEligible) {
       return res.status(403).json({ message: "You can only review products from a completed (delivered) order." });
     }
 

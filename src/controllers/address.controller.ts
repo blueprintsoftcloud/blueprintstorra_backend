@@ -7,6 +7,37 @@ import NodeGeocoder from "node-geocoder";
 
 const geocoder = NodeGeocoder({ provider: "openstreetmap" });
 
+/**
+ * Cleans the street address by removing duplicated city, state, zipCode, and country from the end.
+ */
+const cleanStreetAddress = (
+  fullAddress: string,
+  city: string,
+  state: string,
+  zipCode: string,
+  country: string
+): string => {
+  let clean = fullAddress || "";
+  
+  const termsToRemove = [
+    country,
+    zipCode,
+    state,
+    city
+  ].filter(Boolean);
+
+  for (const term of termsToRemove) {
+    const escapedTerm = term.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const regex = new RegExp(`[,\\s]*${escapedTerm}\\b`, 'gi');
+    clean = clean.replace(regex, '');
+  }
+
+  // Trim any trailing commas, periods, spaces
+  clean = clean.replace(/[,.\s]+$/, '').trim();
+  
+  return clean || fullAddress;
+};
+
 /** Check whether the WAREHOUSE_SETTINGS feature flag is enabled. */
 const isWarehouseEnabled = async (): Promise<boolean> => {
   const flag = await FeatureFlag.findOne({ feature: "WAREHOUSE_SETTINGS" });
@@ -41,13 +72,17 @@ export const saveLocationAndGetShipping = async (req: Request, res: Response) =>
     }
 
     const existingDefault = await Address.findOne({ userId, isDefault: true });
+    const cityVal = data.city ?? "";
+    const stateVal = data.state ?? "";
+    const zipCodeVal = data.zipcode ?? "";
+    const countryVal = data.country ?? "India";
     const addressData = {
       userId,
-      fullAddress: data.formattedAddress ?? "",
-      city: data.city ?? "",
-      state: data.state ?? "",
-      country: data.country ?? "",
-      zipCode: data.zipcode ?? "",
+      fullAddress: cleanStreetAddress(data.formattedAddress ?? "", cityVal, stateVal, zipCodeVal, countryVal),
+      city: cityVal,
+      state: stateVal,
+      country: countryVal,
+      zipCode: zipCodeVal,
       latitude,
       longitude,
       isDefault: true,
@@ -132,17 +167,21 @@ export const previewShipping = async (req: Request, res: Response) => {
     let state = "";
     let country = "India";
     let fullAddress = "";
+    let city = "";
+    let zipCode = "";
     try {
       const geo = await geocoder.reverse({ lat: latitude, lon: longitude });
       if (geo.length) {
         state = geo[0].state ?? "";
         country = geo[0].country ?? "India";
-        fullAddress = geo[0].formattedAddress ?? "";
+        city = geo[0].city ?? "";
+        zipCode = geo[0].zipcode ?? "";
+        fullAddress = cleanStreetAddress(geo[0].formattedAddress ?? "", city, state, zipCode, country);
       }
     } catch { /* geocoding failed — proceed with empty state */ }
 
     const result = calculateShippingWithConfig(latitude, longitude, country, state, config, warehouse.lat, warehouse.lng);
-    return res.json({ ...result, address: fullAddress, state, country, lat: latitude, lng: longitude, free: false });
+    return res.json({ ...result, address: fullAddress, city, state, country, zipCode, lat: latitude, lng: longitude, free: false });
   } catch (err: any) {
     logger.error("previewShipping error", err);
     res.status(500).json({ error: err.message });

@@ -1,8 +1,9 @@
 import { Request, Response } from "express";
 import bcrypt from "bcrypt";
-import { User, Product, Order, OrderItem } from "../models/mongoose";
+import { User, Product, Order, OrderItem, StaffProfile } from "../models/mongoose";
 import logger from "../utils/logger";
 import { createAuditLog } from "../utils/auditLog";
+import { checkQuota } from "../utils/quotaChecker";
 
 const calculatePercentage = (current: number, previous: number): number => {
   if (previous === 0) return current === 0 ? 0 : 100;
@@ -317,7 +318,7 @@ export const getDashboardData = async (_req: Request, res: Response) => {
 // GET /api/admin/users?page=1&limit=20  (admin)
 export const getAllUsers = async (req: Request, res: Response) => {
   try {
-    const { page = "1", limit = "20", role } = req.query as Record<string, string | undefined>;
+    const { page = "1", limit = "20", role, search } = req.query as Record<string, string | undefined>;
 
     const pageSize = Math.min(Math.max(parseInt(limit ?? "20") || 20, 1), 100);
     const skip = (Math.max(parseInt(page ?? "1") || 1, 1) - 1) * pageSize;
@@ -326,14 +327,23 @@ export const getAllUsers = async (req: Request, res: Response) => {
     // If a role filter is provided, respect it but never expose SUPER_ADMIN.
     const allowedRoles: ("CUSTOMER" | "ADMIN")[] = ["CUSTOMER", "ADMIN"];
     const requestedRole = role?.toUpperCase() as "CUSTOMER" | "ADMIN" | undefined;
-    const where =
+    const where: any =
       requestedRole && allowedRoles.includes(requestedRole)
         ? { role: requestedRole }
-        : { role: { in: allowedRoles } };
+        : { role: { $in: allowedRoles } };
+
+    if (search && search.trim() !== "") {
+      const regex = new RegExp(search.trim(), "i");
+      where.$or = [
+        { username: regex },
+        { email: regex },
+        { phone: regex },
+      ];
+    }
 
     const [users, total] = await Promise.all([
       User.find(where)
-        .select('id username email phone role createdAt')
+        .select('id username email phone role isPrimaryAdmin primaryAdminId createdAt')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(pageSize),
@@ -384,6 +394,28 @@ export const createAdminUser = async (req: Request, res: Response) => {
 
     const normalizedRole = role.toUpperCase() as "CUSTOMER" | "ADMIN" | "SUPER_ADMIN";
 
+    // ── Auto team linkage ────────────────────────────────────────────────────
+    // The first ADMIN in the system is the Primary Admin (billing owner).
+    // Every subsequent ADMIN is automatically linked as a Secondary Admin.
+    let isPrimaryAdmin = false;
+    let resolvedPrimaryAdminId: string | null = null;
+
+    if (normalizedRole === 'ADMIN') {
+      const existingPrimary = await User.findOne({ role: 'ADMIN', isPrimaryAdmin: true }).select('_id').lean();
+      if (!existingPrimary) {
+        // No primary exists yet — this user becomes the Primary Admin.
+        isPrimaryAdmin = true;
+      } else {
+        // A Primary Admin already exists — link this user as a Secondary Admin.
+        isPrimaryAdmin = false;
+        resolvedPrimaryAdminId = existingPrimary._id.toString();
+      }
+    }
+
+    if (normalizedRole === 'ADMIN') {
+      await checkQuota(req, 'admins');
+    }
+
     const newUser = await User.create({
       username,
       email,
@@ -391,6 +423,10 @@ export const createAdminUser = async (req: Request, res: Response) => {
       password: hashedPassword,
       role: normalizedRole,
       isVerified: true,
+      ...(normalizedRole === 'ADMIN' && {
+        isPrimaryAdmin,
+        ...(resolvedPrimaryAdminId && { primaryAdminId: resolvedPrimaryAdminId }),
+      }),
     });
     await createAuditLog({ req, action: "CREATE_USER", entity: "User", details: { username, email, role: normalizedRole } });
     res.json({ message: `User created successfully with role: ${normalizedRole}.` });
@@ -465,6 +501,20 @@ export const deleteUser = async (req: Request, res: Response) => {
     }
     if (req.user?.id === id) {
       return res.status(400).json({ message: "You cannot delete your own account." });
+    }
+
+    if (target.role === "ADMIN") {
+      // Find all staff profiles managed by this admin
+      const staffProfiles = await StaffProfile.find({ managedBy: id });
+      const staffUserIds = staffProfiles.map((sp) => sp.userId);
+
+      // Delete staff profiles
+      await StaffProfile.deleteMany({ managedBy: id });
+
+      // Delete staff users
+      if (staffUserIds.length > 0) {
+        await User.deleteMany({ _id: { $in: staffUserIds } });
+      }
     }
 
     await User.findByIdAndDelete(id);

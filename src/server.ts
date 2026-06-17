@@ -8,6 +8,7 @@ import path from "path";
 import { env } from "./config/env";
 import "./config/prisma";
 import { connectDB } from "./config/database";
+import { seedDefaultPlans } from "./utils/planSeeder";
 import { errorHandler } from "./middleware/errorHandler.middleware";
 import { generalLimiter } from "./middleware/rateLimit.middleware";
 import initSocket from "./socket/socketManager";
@@ -31,6 +32,8 @@ import settingsRoutes from "./routes/settings.routes";
 import paymentLogRoutes from "./routes/paymentLog.routes";
 import reviewRoutes from "./routes/review.routes";
 import homeBannerRoutes from "./routes/homeBanner.routes";
+import billingRoutes from "./routes/billing.routes";
+import posOrderRoutes from "./routes/posOrder.routes";
 
 const app = express();
 const server = http.createServer(app);
@@ -139,6 +142,8 @@ app.use("/api/settings", settingsRoutes);
 app.use("/api/payment-logs", paymentLogRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/home-banners", homeBannerRoutes);
+app.use("/api/billing", billingRoutes);
+app.use("/api/orders", posOrderRoutes);
 
 // ── Error Handler ─────────────────────────────────────────────────────────────
 app.use(errorHandler);
@@ -159,6 +164,8 @@ const startServer = async () => {
     console.log("Connecting to MongoDB...");
     await connectDB();
     console.log("MongoDB connected.");
+
+    await seedDefaultPlans();
 
     const PORT = Number(env.PORT ?? 5000);
     server.listen(PORT, "0.0.0.0", () => {

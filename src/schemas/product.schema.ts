@@ -31,6 +31,14 @@ export const productAddSchema = z.object({
     .refine((v) => !isNaN(v) && v >= 0, "Stock must be a non-negative integer")
     .optional()
     .default(0),
+  rentalStock: z.any().optional(),
+  sizes: z.any().optional(),
+  discount: z
+    .union([z.string(), z.number()])
+    .transform((v) => (v === "" ? 0 : parseFloat(String(v))))
+    .refine((v) => !isNaN(v) && v >= 0 && v <= 100, "Discount must be between 0 and 100")
+    .optional()
+    .default(0),
 });
 
 export const productUpdateSchema = z.object({
@@ -52,5 +60,12 @@ export const productUpdateSchema = z.object({
     .union([z.string(), z.number()])
     .transform((v) => parseInt(String(v), 10))
     .refine((v) => !isNaN(v) && v >= 0, "Stock must be a non-negative integer")
+    .optional(),
+  rentalStock: z.any().optional(),
+  sizes: z.any().optional(),
+  discount: z
+    .union([z.string(), z.number()])
+    .transform((v) => (v === "" ? 0 : parseFloat(String(v))))
+    .refine((v) => !isNaN(v) && v >= 0 && v <= 100, "Discount must be between 0 and 100")
     .optional(),
 });

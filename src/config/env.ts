@@ -11,6 +11,8 @@ import path from "path";
 // In source this is ../../.env, and in compiled dist this is also ../../.env.
 dotenv.config({ path: path.resolve(__dirname, "../../.env") });
 
+ console.log(".env loads");
+
 const envSchema = z.object({
   NODE_ENV: z
     .enum(["development", "production", "test"])
@@ -19,6 +21,7 @@ const envSchema = z.object({
   ALLOWED_ORIGINS: z.string().default("http://localhost:5173"),
 
   // Database
+  
   MONGO_URL: z.string().optional(),
   DATABASE_URL: z.string().optional(),
 
@@ -38,9 +41,13 @@ const envSchema = z.object({
   CLOUDINARY_API_KEY: z.string().min(1, "CLOUDINARY_API_KEY is required"),
   CLOUDINARY_API_SECRET: z.string().min(1, "CLOUDINARY_API_SECRET is required"),
 
-  // Razorpay
+  // Razorpay — Shop Owner e-commerce checkout (DO NOT USE for SaaS billing)
   RAZORPAY_KEY_ID: z.string().min(1, "RAZORPAY_KEY_ID is required"),
   RAZORPAY_KEY_SECRET: z.string().min(1, "RAZORPAY_KEY_SECRET is required"),
+
+  // Razorpay — Super Admin SaaS billing (subscriptions, upgrades, add-ons)
+  SUPER_ADMIN_RAZORPAY_KEY_ID: z.string().min(1, "SUPER_ADMIN_RAZORPAY_KEY_ID is required"),
+  SUPER_ADMIN_RAZORPAY_KEY_SECRET: z.string().min(1, "SUPER_ADMIN_RAZORPAY_KEY_SECRET is required"),
 
   // MSG91 Mobile OTP
   MSG91_AUTH_KEY: z.string().default(""),

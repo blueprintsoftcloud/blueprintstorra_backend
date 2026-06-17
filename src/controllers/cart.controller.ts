@@ -14,8 +14,13 @@ const emitCartUpdate = (req: Request, userId: string, cartCount: number) => {
 
 // Helper: compute cart total from CartItems with live product prices
 const computeCartTotal = (
-  items: Array<{ quantity: number; product: { price: number } | null }>,
-) => items.reduce((sum, item) => sum + (item.product?.price ?? 0) * item.quantity, 0);
+  items: Array<{ quantity: number; product: { price: number; discount?: number } | null }>,
+) => items.reduce((sum, item) => {
+  const price = item.product?.discount && item.product.discount > 0
+    ? item.product.price * (1 - item.product.discount / 100)
+    : (item.product?.price ?? 0);
+  return sum + price * item.quantity;
+}, 0);
 
 const CART_INCLUDE = {
   items: {
@@ -25,6 +30,7 @@ const CART_INCLUDE = {
           id: true,
           name: true,
           price: true,
+          discount: true,
           image: true,
           stock: true,
           isActive: true,
@@ -130,7 +136,7 @@ export const cartList = async (req: Request, res: Response) => {
     // Fetch cart items and populate product via Mongoose (reliable, no bridge layer)
     const rawItems = await CartItem
       .find({ cartId: cart._id })
-      .populate<{ productId: any }>('productId', 'name price image stock isActive categoryId')
+      .populate<{ productId: any }>('productId', 'name price discount image stock isActive categoryId')
       .lean();
 
     // Validate: remove items whose product no longer exists or is inactive
@@ -158,6 +164,7 @@ export const cartList = async (req: Request, res: Response) => {
             id: String(prod._id),
             name: prod.name,
             price: prod.price,
+            discount: prod.discount,
             image: prod.image,
             stock: prod.stock,
             isActive: prod.isActive,
@@ -166,7 +173,12 @@ export const cartList = async (req: Request, res: Response) => {
         };
       });
 
-    const totalAmount = validItems.reduce((sum, i) => sum + i.product.price * i.quantity, 0);
+    const totalAmount = validItems.reduce((sum, i) => {
+      const price = i.product.discount && i.product.discount > 0
+        ? i.product.price * (1 - i.product.discount / 100)
+        : i.product.price;
+      return sum + price * i.quantity;
+    }, 0);
     const totalQuantity = validItems.reduce((sum, i) => sum + i.quantity, 0);
 
     res.status(200).json({
@@ -214,6 +226,44 @@ export const cartRemove = async (req: Request, res: Response) => {
   } catch (err: any) {
     logger.error("cartRemove error", err);
     res.status(500).json({ message: "Error in removing cart" });
+  }
+};
+
+// DELETE /api/cart/clear 
+export const cartClear = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+
+    // 1. Find the user's cart
+    const cart = await prisma.cart.findUnique({ where: { userId } });
+    if (!cart) {
+      return res.status(200).json({ 
+        message: "Cart is already empty", 
+        cart: null, 
+        totalAmount: 0 
+      });
+    }
+
+    // 2. Delete all items associated with this cartId
+    await prisma.cartItem.deleteMany({ where: { cartId: cart.id } });
+
+    // 3. Fetch the fresh (now empty) cart to return the expected schema to the frontend
+    const updatedCart = await prisma.cart.findUnique({
+      where: { userId },
+      include: CART_INCLUDE,
+    });
+
+    res.status(200).json({
+      message: "Cart cleared successfully",
+      cart: updatedCart,
+      totalAmount: 0, 
+    });
+
+    // 4. Emit socket event to instantly update the admin dashboard
+    emitCartUpdate(req, userId, 0);
+  } catch (err: any) {
+    logger.error("cartClear error", err);
+    res.status(500).json({ message: "Error in clearing cart" });
   }
 };
 

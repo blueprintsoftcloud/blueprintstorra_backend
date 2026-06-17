@@ -406,7 +406,7 @@ export const updateBanner = async (req: Request, res: Response) => {
     if (req.file) {
       // Upload new image and delete old one
       imageUrl = await uploadToCloudinary(req.file.buffer, "home-banners");
-      await deleteFromCloudinary(existing.image).catch(() => {});
+      await deleteFromCloudinary(existing.image).catch(() => { });
     }
 
     const banner = await prisma.homeBanner.update({
@@ -439,7 +439,7 @@ export const deleteBanner = async (req: Request, res: Response) => {
     if (!existing) return res.status(404).json({ message: "Banner not found" });
 
     await prisma.homeBanner.delete({ where: { id } });
-    await deleteFromCloudinary(existing.image).catch(() => {});
+    await deleteFromCloudinary(existing.image).catch(() => { });
 
     await createAuditLog({ req, action: "DELETE_HOME_BANNER", entity: "HomeBanner", entityId: id, details: {} });
 

@@ -3,6 +3,7 @@ import { Product, Category, ProductAttributeValue } from "../models/mongoose";
 import { deleteFromCloudinary, uploadToCloudinary } from "../config/cloudinary";
 import logger from "../utils/logger";
 import { createAuditLog } from "../utils/auditLog";
+import { checkQuota } from "../utils/quotaChecker";
 
 // GET /api/products/list?categoryId=xxx&page=1&limit=20  (admin)
 export const productList = async (req: Request, res: Response) => {
@@ -52,7 +53,7 @@ export const productList = async (req: Request, res: Response) => {
 // POST /api/products/add  (admin)
 export const productAdd = async (req: Request, res: Response) => {
   try {
-    const { code, name, description, price, purchasePrice, category, stock, discount } = req.body;
+    const { code, name, description, price, purchasePrice, category, stock, rentalStock, discount } = req.body;
     const sizesRaw = req.body.sizes;
     const sizes: string[] = Array.isArray(sizesRaw) ? sizesRaw : (sizesRaw ? [sizesRaw] : []);
 
@@ -76,6 +77,8 @@ export const productAdd = async (req: Request, res: Response) => {
     if (!cat) {
       return res.status(400).json({ message: "Category not found" });
     }
+
+    await checkQuota(req, 'productsPerCategory', category);
 
     const files = req.files as { [fieldname: string]: Express.Multer.File[] } | undefined;
     let imageUrl: string | null = null;
@@ -102,6 +105,8 @@ export const productAdd = async (req: Request, res: Response) => {
         image: imageUrl,
         images: additionalImages,
         stock: stock ? parseInt(stock) : 0,
+        stockQuantity: stock ? parseInt(stock) : 0,
+        rentalStock: (rentalStock !== undefined && rentalStock !== null && rentalStock !== "") ? parseInt(rentalStock) : (stock ? parseInt(stock) : 0),
         sizes,
         discount: discount ? parseFloat(discount) : 0,
       },
@@ -146,7 +151,7 @@ export const productAdd = async (req: Request, res: Response) => {
 export const productUpdate = async (req: Request, res: Response) => {
   try {
     const id = req.params.id as string;
-    const { code, name, description, price, purchasePrice, category, stock, discount } = req.body;
+    const { code, name, description, price, purchasePrice, category, stock, rentalStock, discount } = req.body;
     const sizesRaw = req.body.sizes;
     const sizes: string[] | undefined = sizesRaw !== undefined
       ? (Array.isArray(sizesRaw) ? sizesRaw : [sizesRaw])
@@ -198,6 +203,8 @@ export const productUpdate = async (req: Request, res: Response) => {
         image: imageUrl,
         images: updatedImages,
         stock: stock !== undefined ? parseInt(stock) : existing.stock,
+        stockQuantity: stock !== undefined ? parseInt(stock) : existing.stockQuantity,
+        rentalStock: (rentalStock !== undefined && rentalStock !== null && rentalStock !== "") ? parseInt(rentalStock) : (stock !== undefined ? parseInt(stock) : existing.rentalStock),
         sizes: sizes ?? existing.sizes,
         discount: discount !== undefined ? parseFloat(discount) : existing.discount,
       },
@@ -293,3 +300,42 @@ export const productDelete = async (req: Request, res: Response) => {
       .json({ message: "Error in product deleting", error: err.message });
   }
 };
+
+// PATCH /api/product/:id/status (admin)
+export const productToggleStatus = async (req: Request, res: Response) => {
+  try {
+    const id = req.params.id as string;
+    const { isActive } = req.body;
+
+    if (isActive === undefined || typeof isActive !== "boolean") {
+      return res.status(400).json({ message: "isActive status must be a boolean" });
+    }
+
+    const product = await prisma.product.findUnique({ where: { id } });
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    const updated = await prisma.product.update({
+      where: { id },
+      data: { isActive },
+    });
+
+    await createAuditLog({
+      req,
+      action: isActive ? "ENABLE_PRODUCT" : "DISABLE_PRODUCT",
+      entity: "Product",
+      entityId: id,
+      details: { name: product.name, isActive },
+    });
+
+    res.status(200).json({
+      message: `Product ${isActive ? "enabled" : "disabled"} successfully`,
+      product: updated,
+    });
+  } catch (err: any) {
+    logger.error("productToggleStatus error", err);
+    res.status(500).json({ message: "Error toggling product status", error: err.message });
+  }
+};
+

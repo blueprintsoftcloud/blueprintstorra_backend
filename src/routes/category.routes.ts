@@ -4,6 +4,7 @@ import {
   categoryAdd,
   categoryUpdate,
   categoryDelete,
+  categoryToggleStatus,
 } from "../controllers/category.controller";
 import {
   getCategoryAttributes,
@@ -51,6 +52,13 @@ router.delete(
   adminOrStaff("CATEGORY_DELETE"),
   featureGate("CATEGORY_MANAGEMENT"),
   categoryDelete,
+);
+router.patch(
+  "/:id/status",
+  authMiddleware,
+  adminOrStaff("CATEGORY_EDIT"),
+  featureGate("CATEGORY_MANAGEMENT"),
+  categoryToggleStatus,
 );
 
 // ── Category Attribute routes ──────────────────────────────────────────────────

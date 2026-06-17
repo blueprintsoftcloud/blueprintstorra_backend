@@ -1,4 +1,6 @@
 import mongoose, { Document, Schema } from 'mongoose';
+import { SYSTEM_FEATURES } from '../config/plans';
+import type { PlanCode, FeatureType } from '../config/plans';
 
 // ───────────────────────────── ENUMS ───────────────────────────────
 
@@ -23,6 +25,8 @@ export const FeatureEnum = [
   'PRODUCT_REVIEWS',
   'HOMEPAGE_MANAGEMENT',
   'ADMIN_ORDER',
+  'LIVE_BILLING',
+  'RENTAL_MANAGEMENT',
 ] as const;
 export type Feature = typeof FeatureEnum[number];
 export const OrderStatusEnum = ['PROCESSING', 'CONFIRMED', 'SHIPPED', 'DELIVERED', 'CANCELLED'] as const;
@@ -46,6 +50,12 @@ export interface IUser extends Document {
   isVerified: boolean;
   refreshToken?: string;
   avatar?: string;
+  /** True for the first ADMIN user created in the tenant (the shop owner). */
+  isPrimaryAdmin: boolean;
+  /** For secondary admins: the ObjectId of the primary admin who owns the tenant's subscription. */
+  primaryAdminId?: mongoose.Types.ObjectId;
+  /** Reference to the tenant's Subscription document for fast population at login. */
+  subscriptionId?: mongoose.Types.ObjectId;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -60,6 +70,9 @@ const UserSchema = new Schema<IUser>(
     isVerified: { type: Boolean, default: false },
     refreshToken: String,
     avatar: String,
+    isPrimaryAdmin: { type: Boolean, default: false },
+    primaryAdminId: { type: Schema.Types.ObjectId, ref: 'User' },
+    subscriptionId: { type: Schema.Types.ObjectId, ref: 'Subscription' },
   },
   { timestamps: true }
 );
@@ -137,6 +150,8 @@ export interface IProduct extends Document {
   purchasePrice?: number;
   price: number;
   stock: number;
+  stockQuantity: number;
+  rentalStock: number;
   sizes: string[];
   discount: number;
   image?: string;
@@ -159,6 +174,8 @@ const ProductSchema = new Schema<IProduct>(
     purchasePrice: Number,
     price: { type: Number, required: true },
     stock: { type: Number, default: 0 },
+    stockQuantity: { type: Number, default: 0 },
+    rentalStock: { type: Number, default: 0 },
     sizes: { type: [String], default: [] },
     discount: { type: Number, default: 0 },
     image: String,
@@ -695,7 +712,317 @@ const CustomerTrackerSchema = new Schema<ICustomerTracker>(
 
 export const CustomerTracker = mongoose.model<ICustomerTracker>('CustomerTracker', CustomerTrackerSchema);
 
-// Aliases for compatibility
+// ───────────────────────────── SUBSCRIPTION ─────────────────────────────────
+
+/**
+ * The three lifecycle states a tenant subscription can occupy.
+ *
+ * ACTIVE                  — Billing is current; features are accessible.
+ * INACTIVE                — Expired or manually revoked; features are blocked.
+ * PENDING_OFFLINE_PAYMENT — Admin submitted an offline payment request;
+ *                           features remain locked until Super Admin confirms.
+ */
+export type SubscriptionStatus = 'ACTIVE' | 'INACTIVE' | 'PENDING_OFFLINE_PAYMENT';
+
+const SUBSCRIPTION_STATUS_VALUES: SubscriptionStatus[] = [
+  'ACTIVE',
+  'INACTIVE',
+  'PENDING_OFFLINE_PAYMENT',
+];
+
+export interface ISubscription extends Document {
+  /** The ADMIN-role user who owns this subscription (one-to-one). */
+  adminId: mongoose.Types.ObjectId;
+  /** References `Plan.code` — the plan document code the tenant purchased. */
+  planCode: PlanCode;
+  /** Current billing/access state of this subscription. */
+  status: SubscriptionStatus;
+  /**
+   * Individual add-on features purchased on top of the base plan.
+   * Empty array for plans that already include those features (e.g. LIFETIME_PRO).
+   */
+  purchasedAddons: FeatureType[];
+  /** When the subscription period began. */
+  startDate: Date;
+  /**
+   * When the subscription expires. `null` for LIFETIME plans — they never
+   * expire and must be revoked explicitly by Super Admin.
+   */
+  expiresAt: Date | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const subscriptionSchema = new Schema<ISubscription>(
+  {
+    adminId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+    },
+    planCode: {
+      type: String,
+      required: true,
+    },
+    status: {
+      type: String,
+      enum: SUBSCRIPTION_STATUS_VALUES,
+      required: true,
+    },
+    purchasedAddons: {
+      // Element-level enum: each entry must be a known system feature.
+      type: [{ type: String, enum: [...SYSTEM_FEATURES] }],
+      default: [],
+    },
+    startDate: {
+      type: Date,
+      required: true,
+    },
+    expiresAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  { timestamps: true }
+);
+
+/**
+ * UNIQUE index on adminId — enforces the one-subscription-per-admin invariant
+ * at the database level and gives O(1) point lookups during auth middleware.
+ */
+subscriptionSchema.index({ adminId: 1 }, { unique: true });
+
+/**
+ * Standard index on status — enables efficient scans for billing jobs
+ * (e.g. "find all ACTIVE subscriptions expiring today") without a
+ * collection scan.
+ */
+subscriptionSchema.index({ status: 1 });
+
+export const Subscription = mongoose.model<ISubscription>('Subscription', subscriptionSchema);
+
+// ─────────────────────────────── PLAN ────────────────────────────────────────
+
+/**
+ * Dynamic SaaS plan definition — replaces the hardcoded SAAS_PLANS constant.
+ * The Super Admin may update any plan's feature set at runtime without a
+ * code deployment. Pricing and billing cycle are also stored here so the
+ * billing service never needs to reference a static file.
+ */
+export interface IPlan extends Document {
+  code: string;          // e.g. 'MONTHLY_BASIC', 'LIFETIME_PRO'
+  name: string;          // Human-readable display name
+  price: number;         // Amount in INR (Razorpay paise = price × 100)
+  billingCycle: 'MONTHLY' | 'LIFETIME';
+  /** Feature toggles — each entry can be individually paused without removing it from the plan. */
+  features: { feature: FeatureType; isEnabled: boolean }[];
+  limits: { admins: number; staff: number; categories: number; productsPerCategory: number; };
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const planSchema = new Schema<IPlan>(
+  {
+    code:         { type: String, required: true },
+    name:         { type: String, required: true },
+    price:        { type: Number, required: true },
+    billingCycle: { type: String, enum: ['MONTHLY', 'LIFETIME'], required: true },
+    features: {
+      type: [{
+        feature:   { type: String, required: true, enum: [...SYSTEM_FEATURES] },
+        isEnabled: { type: Boolean, default: true },
+      }],
+      default: [],
+    },
+    limits: {
+      admins: { type: Number, required: true },
+      staff: { type: Number, required: true },
+      categories: { type: Number, required: true },
+      productsPerCategory: { type: Number, required: true },
+    },
+  },
+  { timestamps: true },
+);
+
+/**
+ * Unique index on `code` — plan lookups from the feature gate and billing
+ * service always use code as the key, so this gives O(1) point queries
+ * and enforces the one-document-per-plan invariant at the DB level.
+ */
+planSchema.index({ code: 1 }, { unique: true });
+
+export const Plan = mongoose.model<IPlan>('Plan', planSchema);
+
+// ─────────────────────────────── SAAS ORDER ─────────────────────────────────
+
+/**
+ * Immutable ledger of every SaaS payment processed through the platform.
+ * Upgrade and add-on purchases are recorded here — NOT in the customer Order
+ * collection — so SaaS revenue can be tracked and audited independently.
+ */
+export interface ISaaSOrder extends Document {
+  /** The Primary Admin user who made the payment. */
+  adminId: mongoose.Types.ObjectId;
+  /** 'UPGRADE' = plan change payment; 'ADDON' = individual feature purchase. */
+  type: 'UPGRADE' | 'ADDON';
+  /** Populated for UPGRADE transactions — the plan code purchased. */
+  planCode?: string;
+  /** Populated for ADDON transactions — the feature key purchased. */
+  feature?: string;
+  /** Amount in INR (Razorpay paise ÷ 100). */
+  amount: number;
+  /** Terminal payment status recorded at the time of verify. */
+  status: 'SUCCESS' | 'FAILED';
+  /** Razorpay order ID for reconciliation. */
+  razorpayOrderId?: string;
+  /** Razorpay payment ID for reconciliation. */
+  razorpayPaymentId?: string;
+  createdAt: Date;
+}
+
+const saaSOrderSchema = new Schema<ISaaSOrder>(
+  {
+    adminId:           { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    type:              { type: String, enum: ['UPGRADE', 'ADDON'], required: true },
+    planCode:          String,
+    feature:           String,
+    amount:            { type: Number, required: true },
+    status:            { type: String, enum: ['SUCCESS', 'FAILED'], required: true },
+    razorpayOrderId:   String,
+    razorpayPaymentId: String,
+  },
+  { timestamps: true },
+);
+saaSOrderSchema.index({ adminId: 1 });
+saaSOrderSchema.index({ createdAt: -1 });
+
+export const SaaSOrder = mongoose.model<ISaaSOrder>('SaaSOrder', saaSOrderSchema);
+
+// ─────────────────────────────── POS ORDER ───────────────────────────────────
+
+export interface IPOSOrderItem {
+  productId: mongoose.Types.ObjectId;
+  name: string;
+  price: number;
+  quantity: number;
+}
+
+export interface IPOSOrder extends Document {
+  invoiceNo: string;
+  ticketId: string;
+  mode: 'BILLING' | 'KOT';
+  status: 'PENDING_KITCHEN' | 'COMPLETED' | 'CANCELLED';
+  tableNumber?: string;
+  customerName?: string;
+  paymentMethod: 'CASH' | 'ONLINE';
+  items: IPOSOrderItem[];
+  subtotal: number;
+  gstPercent: number;
+  gstAmount: number;
+  serviceCharge?: number;
+  totalAmount: number;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const POSOrderItemSchema = new Schema<IPOSOrderItem>({
+  productId: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
+  name: { type: String, required: true },
+  price: { type: Number, required: true },
+  quantity: { type: Number, required: true }
+});
+
+const POSOrderSchema = new Schema<IPOSOrder>(
+  {
+    invoiceNo: { type: String, required: true },
+    ticketId: { type: String, required: false },
+    mode: { type: String, enum: ['BILLING', 'KOT'], required: true },
+    status: { type: String, enum: ['PENDING_KITCHEN', 'COMPLETED', 'CANCELLED'], required: true },
+    tableNumber: String,
+    customerName: String,
+    paymentMethod: { type: String, enum: ['CASH', 'ONLINE'], default: 'CASH' },
+    items: [POSOrderItemSchema],
+    subtotal: { type: Number, required: true },
+    gstPercent: { type: Number, default: 0 },
+    gstAmount: { type: Number, default: 0 },
+    serviceCharge: { type: Number, default: 0 },
+    totalAmount: { type: Number, required: true }
+  },
+  { timestamps: true }
+);
+
+POSOrderSchema.index({ invoiceNo: 1 });
+POSOrderSchema.index({ ticketId: 1 });
+POSOrderSchema.index({ status: 1 });
+POSOrderSchema.index({ mode: 1 });
+
+export const POSOrder = mongoose.model<IPOSOrder>('POSOrder', POSOrderSchema);
+
+
+// ───────────────────────────── RENTAL BOOKING ───────────────────────────────
+
+export interface IRentalBookingItem {
+  productId: mongoose.Types.ObjectId;
+  quantity: number;
+}
+
+export interface IRentalBooking extends Document {
+  customerName: string;
+  phone: string;
+  address?: string;
+  items: IRentalBookingItem[];
+  fromDate: Date;
+  toDate: Date;
+  totalDurationDays?: number;
+  advancePaid: number;
+  paymentMethod: 'CASH' | 'UPI' | 'CARD' | 'BANK_TRANSFER';
+  documents: string[];
+  status: 'Active' | 'Returned' | 'Overdue';
+  submitTime?: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const RentalBookingItemSchema = new Schema<IRentalBookingItem>({
+  productId: { type: Schema.Types.ObjectId, ref: 'Product', required: true },
+  quantity: { type: Number, min: 1, required: true }
+});
+
+const RentalBookingSchema = new Schema<IRentalBooking>(
+  {
+    customerName: { type: String, required: true },
+    phone: { type: String, required: true },
+    address: String,
+    items: { type: [RentalBookingItemSchema], required: true },
+    fromDate: { type: Date, required: true },
+    toDate: { type: Date, required: true },
+    totalDurationDays: Number,
+    advancePaid: { type: Number, default: 0 },
+    paymentMethod: {
+      type: String,
+      enum: ['CASH', 'UPI', 'CARD', 'BANK_TRANSFER'],
+      default: 'CASH'
+    },
+    documents: { type: [String], default: [] },
+    status: {
+      type: String,
+      enum: ['Active', 'Returned', 'Overdue'],
+      default: 'Active'
+    },
+    submitTime: { type: Date }
+  },
+  { timestamps: true }
+);
+
+RentalBookingSchema.index({ status: 1 });
+RentalBookingSchema.index({ customerName: 1 });
+RentalBookingSchema.index({ fromDate: 1, toDate: 1 });
+
+export const RentalBooking = mongoose.model<IRentalBooking>('RentalBooking', RentalBookingSchema);
+
+
+
+// ── Aliases ───────────────────────────────────────────────────────────────────
 export const Attribute = CategoryAttribute;
 export const AttributeValue = CategoryAttributeValue;
 export const CompanySettings = AppSetting;

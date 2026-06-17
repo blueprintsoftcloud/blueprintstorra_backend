@@ -5,19 +5,23 @@
 
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import { User, StaffProfile } from "../models/mongoose";
 import { env } from "../config/env";
+import logger from "../utils/logger";
 
 interface JwtPayload {
   id: string;
   email: string;
   role: "CUSTOMER" | "ADMIN" | "SUPER_ADMIN" | "STAFF";
+  isPrimaryAdmin?: boolean;
+  primaryAdminId?: string | null;
 }
 
-export const authMiddleware = (
+export const authMiddleware = async (
   req: Request,
   res: Response,
   next: NextFunction,
-): void => {
+): Promise<void> => {
   const token = req.cookies?.jwt as string | undefined;
 
   if (!token) {
@@ -26,7 +30,37 @@ export const authMiddleware = (
   }
 
   try {
+    // 1. Mathematically verify the JWT (Stateless check)
     const decoded = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+
+    // 2. Strict Access Revocation (Stateful check for internal roles)
+    if (decoded.role === "STAFF") {
+      const staffProfile = await StaffProfile.findOne({ userId: decoded.id }).lean();
+      
+      // If profile is deleted OR explicitly marked inactive, kill the session
+      if (!staffProfile || staffProfile.isActive === false) {
+        logger.warn(`Auth blocked: Deactivated staff member attempted access`, { userId: decoded.id });
+        res.status(401).json({ 
+          message: "Your account has been deactivated. Please contact your administrator.",
+          expired: true // Tell FE to wipe cookies and redirect
+        });
+        return;
+      }
+    } 
+    else if (decoded.role === "ADMIN") {
+      // For Admins, we verify the user document still exists (in case of hard delete by Super Admin)
+      const userExists = await User.exists({ _id: decoded.id });
+      if (!userExists) {
+        logger.warn(`Auth blocked: Deleted admin attempted access`, { userId: decoded.id });
+        res.status(401).json({ 
+          message: "This account no longer exists.",
+          expired: true 
+        });
+        return;
+      }
+    }
+
+    // 3. Success! Attach user to request and proceed
     req.user = decoded;
     next();
   } catch (err: unknown) {

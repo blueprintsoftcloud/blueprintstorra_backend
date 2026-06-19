@@ -60,10 +60,10 @@ export const updateWarehouseSettings = async (req: Request, res: Response) => {
       }),
       name !== undefined
         ? prisma.appSetting.upsert({
-            where: { key: "WAREHOUSE_NAME" },
-            update: { value: name },
-            create: { key: "WAREHOUSE_NAME", value: name },
-          })
+          where: { key: "WAREHOUSE_NAME" },
+          update: { value: name },
+          create: { key: "WAREHOUSE_NAME", value: name },
+        })
         : Promise.resolve(),
     ]);
 

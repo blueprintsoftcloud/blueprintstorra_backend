@@ -9,7 +9,7 @@ export const profileData = async (req: Request, res: Response) => {
     const userId = req.user!.id;
     const adminData = await prisma.user.findUnique({
       where: { id: userId },
-      select: { id: true, username: true, email: true, role: true, avatar: true },
+      select: { id: true, username: true, email: true, role: true, avatar: true, phone: true },
     });
     if (!adminData)
       return res.status(404).json({ message: "Admin profile not found" });
@@ -46,7 +46,7 @@ export const updateAvatar = async (req: Request, res: Response) => {
     const updated = await prisma.user.update({
       where: { id: userId },
       data: { avatar: avatarUrl },
-      select: { id: true, username: true, email: true, role: true, avatar: true },
+      select: { id: true, username: true, email: true, role: true, avatar: true, phone: true },
     });
 
     res.json({ message: "Avatar updated", avatar: updated.avatar, user: updated });

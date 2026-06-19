@@ -10,7 +10,10 @@
     "dev:legacy": "nodemon src/server.js",
     "lint": "eslint src --ext .ts",
     "test": "jest --coverage",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "migrate:all": "tsx scripts/initializeRentalSchema.ts",
+    "migrate:rental": "tsx scripts/initialize_rental_stock.ts",
+    "db:init-schemas": "tsx scripts/createAllSchemas.ts"
   },
   "keywords": [],
   "author": "",
